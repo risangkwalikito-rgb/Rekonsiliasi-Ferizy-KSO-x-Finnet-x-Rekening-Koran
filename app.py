@@ -112,6 +112,10 @@ OPTIONAL_COLUMN_PATTERNS = {
     "customer_name": [r"customer\s*name", r"nama\s*customer", r"payer\s*name"],
 }
 
+MERCHANT_AMOUNT_FALLBACK_INDEX = 20
+PAYMENT_DATETIME_FALLBACK_INDEX = 2
+PREFERRED_SETTLEMENT_SHEET = "detail settlement"
+
 
 def normalize_text(value: Any) -> str:
     if value is None or (isinstance(value, float) and np.isnan(value)):
@@ -180,7 +184,17 @@ def read_uploaded_file(uploaded_file: Any) -> pd.DataFrame:
             except Exception:
                 continue
         raise ValueError("File CSV tidak bisa dibaca.")
-    return pd.read_excel(uploaded_file)
+
+    workbook = pd.ExcelFile(uploaded_file)
+    sheet_names = workbook.sheet_names
+    normalized_map = {normalize_text(sheet): sheet for sheet in sheet_names}
+
+    if len(sheet_names) > 1 and PREFERRED_SETTLEMENT_SHEET in normalized_map:
+        target_sheet = normalized_map[PREFERRED_SETTLEMENT_SHEET]
+    else:
+        target_sheet = sheet_names[0]
+
+    return pd.read_excel(workbook, sheet_name=target_sheet)
 
 
 def build_master_df() -> pd.DataFrame:
@@ -197,28 +211,52 @@ def detect_column_by_patterns(df: pd.DataFrame, patterns: list[str]) -> str | No
     return None
 
 
+def get_column_by_position(df: pd.DataFrame, index: int) -> str | None:
+    return df.columns[index] if len(df.columns) > index else None
+
+
 def resolve_required_columns(df: pd.DataFrame) -> dict[str, str]:
     resolved: dict[str, str] = {}
     missing: list[str] = []
 
-    for role, patterns in REQUIRED_COLUMN_PATTERNS.items():
-        found = detect_column_by_patterns(df, patterns)
-        if not found:
-            missing.append(role)
-        else:
-            resolved[role] = found
+    payment_datetime_col = detect_column_by_patterns(df, REQUIRED_COLUMN_PATTERNS["payment_datetime"])
+    if not payment_datetime_col:
+        payment_datetime_col = get_column_by_position(df, PAYMENT_DATETIME_FALLBACK_INDEX)
+    if payment_datetime_col:
+        resolved["payment_datetime"] = payment_datetime_col
+    else:
+        missing.append("payment_datetime")
+
+    payment_method_col = detect_column_by_patterns(df, REQUIRED_COLUMN_PATTERNS["payment_method"])
+    if payment_method_col:
+        resolved["payment_method"] = payment_method_col
+    else:
+        missing.append("payment_method")
+
+    merchant_amount_col = detect_column_by_patterns(df, REQUIRED_COLUMN_PATTERNS["merchant_amount"])
+    if not merchant_amount_col:
+        merchant_amount_col = get_column_by_position(df, MERCHANT_AMOUNT_FALLBACK_INDEX)
+    if merchant_amount_col:
+        resolved["merchant_amount"] = merchant_amount_col
+    else:
+        missing.append("merchant_amount")
+
+    pg_provider_col = detect_column_by_patterns(df, REQUIRED_COLUMN_PATTERNS["pg_provider"])
+    if pg_provider_col:
+        resolved["pg_provider"] = pg_provider_col
+    else:
+        missing.append("pg_provider")
 
     if missing:
         labels = {
-            "payment_datetime": "Payment Date Time",
+            "payment_datetime": "Payment Date Time / kolom C",
             "payment_method": "Payment Method",
-            "merchant_amount": "Merchant Amount",
+            "merchant_amount": "Merchant Amount / kolom U",
             "pg_provider": "PG Provider",
         }
         missing_labels = ", ".join(labels[item] for item in missing)
         raise ValueError(f"Kolom wajib tidak ditemukan: {missing_labels}")
     return resolved
-
 
 def resolve_optional_columns(df: pd.DataFrame) -> dict[str, str | None]:
     return {
@@ -408,7 +446,7 @@ def to_excel_bytes(detail: pd.DataFrame, summary: pd.DataFrame, unmatched: pd.Da
 
 st.title("Rekonsiliasi Sharing Fee FINNET")
 st.caption(
-    "Aplikasi membaca kolom Payment Date Time, Payment Method, Merchant Amount, dan PG Provider. "
+    "Aplikasi membaca Payment Date Time, Payment Method, Merchant Amount atau fallback kolom U, dan PG Provider. "
     "Data yang diproses hanya PG Provider = FINNET."
 )
 
@@ -499,7 +537,7 @@ if uploaded_file:
             [
                 {"Parameter": "Payment Date Time", "Kolom File": column_map["payment_datetime"]},
                 {"Parameter": "Payment Method", "Kolom File": column_map["payment_method"]},
-                {"Parameter": "Merchant Amount", "Kolom File": column_map["merchant_amount"]},
+                {"Parameter": "Merchant Amount / Kolom U", "Kolom File": column_map["merchant_amount"]},
                 {"Parameter": "PG Provider", "Kolom File": column_map["pg_provider"]},
                 {"Parameter": "TRX ID (opsional)", "Kolom File": optional_cols.get("trx_id") or "-"},
                 {"Parameter": "Customer Name (opsional)", "Kolom File": optional_cols.get("customer_name") or "-"},
@@ -555,7 +593,7 @@ st.markdown(
     - Parameter tanggal tampil otomatis di atas uploader settlement FINNET.
     - `Payment Date Time` diparse menjadi datetime lalu difilter sesuai rentang tanggal yang dipilih.
     - `Payment Method` dipakai untuk join ke master fee embedded.
-    - `Merchant Amount` dipakai sebagai amount dasar akumulasi dan perhitungan fee persentase.
+    - `Merchant Amount` dipakai sebagai amount dasar akumulasi; jika header tidak ada maka fallback ke kolom U.
     - `PG Provider` wajib FINNET; data provider lain otomatis diabaikan.
     """
 )

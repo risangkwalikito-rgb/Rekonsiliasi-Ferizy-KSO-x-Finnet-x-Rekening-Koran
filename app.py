@@ -177,12 +177,47 @@ def read_uploaded_file(uploaded_file: Any) -> pd.DataFrame:
         raw = uploaded_file.getvalue()
         for encoding in ("utf-8", "utf-8-sig", "latin1"):
             try:
-                return pd.read_csv(io.BytesIO(raw), encoding=encoding)
+                df = pd.read_csv(io.BytesIO(raw), encoding=encoding)
+                df.attrs["selected_sheet_name"] = "CSV"
+                return df
             except Exception:
                 continue
         raise ValueError("File CSV tidak bisa dibaca.")
 
-    return pd.read_excel(uploaded_file, sheet_name=0)
+    workbook = pd.ExcelFile(uploaded_file)
+    sheet_names = workbook.sheet_names
+
+    if len(sheet_names) == 1:
+        selected_sheet = sheet_names[0]
+    else:
+        target_name = "detail settlement"
+
+        def normalize_sheet_name(value: str) -> str:
+            return re.sub(r"\s+", " ", normalize_text(value)).strip()
+
+        normalized_map = {sheet: normalize_sheet_name(sheet) for sheet in sheet_names}
+
+        selected_sheet = next(
+            (sheet for sheet, normalized in normalized_map.items() if normalized == target_name),
+            None,
+        )
+
+        if selected_sheet is None:
+            selected_sheet = next(
+                (sheet for sheet, normalized in normalized_map.items() if target_name in normalized),
+                None,
+            )
+
+        if selected_sheet is None:
+            available = ", ".join(sheet_names)
+            raise ValueError(
+                "Workbook memiliki beberapa sheet, tetapi sheet bernama 'Detail Settlement' tidak ditemukan. "
+                f"Sheet tersedia: {available}"
+            )
+
+    df = pd.read_excel(workbook, sheet_name=selected_sheet)
+    df.attrs["selected_sheet_name"] = selected_sheet
+    return df
 
 
 def build_master_df() -> pd.DataFrame:
@@ -429,7 +464,7 @@ def to_excel_bytes(display_df: pd.DataFrame, detail_df: pd.DataFrame, unmatched_
 
 
 st.title("Rekonsiliasi Sharing Fee FINNET")
-st.caption("Pilih 1 tanggal dari Payment Date Time kolom C, proses hanya PG Provider FINNET, dan baca Excel selalu dari sheet pertama.")
+st.caption("Pilih 1 tanggal dari Payment Date Time kolom C, proses hanya PG Provider FINNET, dan jika workbook punya beberapa sheet maka otomatis ambil sheet `Detail Settlement`.")
 
 with st.expander("Lihat master fee embedded", expanded=False):
     st.dataframe(
@@ -477,12 +512,14 @@ if uploaded_file:
     info2.metric("Row PG Provider = FINNET", f"{len(finnet_df):,}")
     info3.metric("Row tanggal terpilih", f"{len(filtered_df):,}")
 
+    selected_sheet_name = source_df.attrs.get("selected_sheet_name", "Unknown")
     st.caption(
-        f"Excel dibaca dari sheet pertama. Tanggal diparse dari kolom C (`{column_map['payment_datetime']}`) "
-        f"dengan format `m/dd/yyyy hh:mm:ss` atau `mm/dd/yyyy hh:mm:ss`. Amount diambil dari kolom U (`{column_map['merchant_amount']}`)."
+        f"Excel dibaca dari sheet `{selected_sheet_name}`. Jika workbook punya beberapa sheet, app akan memilih `Detail Settlement`. "
+        f"Tanggal diparse dari kolom C (`{column_map['payment_datetime']}`) dengan format `m/dd/yyyy hh:mm:ss` atau `mm/dd/yyyy hh:mm:ss`. "
+        f"Amount diambil dari kolom U (`{column_map['merchant_amount']}`)."
     )
 
-    with st.expander("Preview data upload sheet 1", expanded=False):
+    with st.expander(f"Preview data upload - sheet {selected_sheet_name}", expanded=False):
         st.dataframe(source_df.head(20), use_container_width=True, hide_index=True)
 
     if filtered_df.empty:
@@ -527,7 +564,8 @@ st.divider()
 st.markdown(
     """
     **Aturan yang dikunci**
-    - Excel selalu dibaca dari **sheet 1 / sheet pertama**.
+    - Jika workbook punya beberapa sheet, app akan memilih sheet bernama **Detail Settlement**.
+    - Jika workbook hanya punya satu sheet, app membaca sheet tersebut.
     - Tanggal diambil dari **kolom C**.
     - Format `Payment Date Time` bisa **m/dd/yyyy hh:mm:ss** atau **mm/dd/yyyy hh:mm:ss**.
     - Amount diambil otomatis dari **kolom U**.

@@ -145,13 +145,37 @@ def parse_number(value: Any) -> float | None:
 
 
 def parse_finnet_datetime(series: pd.Series) -> pd.Series:
-    text_series = series.astype(str).str.strip()
-    extracted = text_series.str.extract(
-        r"^(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})\s+(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})$"
+    result = pd.Series(pd.NaT, index=series.index, dtype="datetime64[ns]")
+
+    native_datetime = pd.to_datetime(series, errors="coerce")
+    result.loc[native_datetime.notna()] = native_datetime.loc[native_datetime.notna()]
+
+    remaining_mask = result.isna()
+    if not remaining_mask.any():
+        return result
+
+    numeric_values = pd.to_numeric(series.where(remaining_mask), errors="coerce")
+    excel_serial = pd.to_datetime(numeric_values, unit="D", origin="1899-12-30", errors="coerce")
+    result.loc[excel_serial.notna()] = excel_serial.loc[excel_serial.notna()]
+
+    remaining_mask = result.isna()
+    if not remaining_mask.any():
+        return result
+
+    text_series = (
+        series.where(remaining_mask)
+        .astype(str)
+        .str.replace("\xa0", " ", regex=False)
+        .str.strip()
+        .replace({"": pd.NA, "nan": pd.NA, "NaT": pd.NA, "None": pd.NA})
     )
 
+    extracted = text_series.str.extract(
+        r"^(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})\s+(?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2})(?:\s*(?P<ampm>AM|PM|am|pm))?$"
+    )
+
+    valid_mask = extracted.notna()[["month", "day", "year", "hour", "minute", "second"]].all(axis=1)
     normalized = pd.Series(pd.NA, index=series.index, dtype="object")
-    valid_mask = extracted.notna().all(axis=1)
 
     if valid_mask.any():
         normalized.loc[valid_mask] = (
@@ -161,14 +185,30 @@ def parse_finnet_datetime(series: pd.Series) -> pd.Series:
             + "/"
             + extracted.loc[valid_mask, "year"]
             + " "
-            + extracted.loc[valid_mask, "hour"]
+            + extracted.loc[valid_mask, "hour"].str.zfill(2)
             + ":"
-            + extracted.loc[valid_mask, "minute"]
+            + extracted.loc[valid_mask, "minute"].str.zfill(2)
             + ":"
-            + extracted.loc[valid_mask, "second"]
+            + extracted.loc[valid_mask, "second"].str.zfill(2)
+            + extracted.loc[valid_mask, "ampm"].fillna("").map(lambda value: f" {value.upper()}" if value else "")
         )
 
-    return pd.to_datetime(normalized, format="%m/%d/%Y %H:%M:%S", errors="coerce")
+        parsed_string = pd.to_datetime(
+            normalized.loc[valid_mask],
+            format="%m/%d/%Y %H:%M:%S",
+            errors="coerce",
+        )
+        ampm_mask = extracted.loc[valid_mask, "ampm"].notna()
+        if ampm_mask.any():
+            parsed_string.loc[ampm_mask] = pd.to_datetime(
+                normalized.loc[valid_mask][ampm_mask],
+                format="%m/%d/%Y %I:%M:%S %p",
+                errors="coerce",
+            )
+
+        result.loc[parsed_string.notna()] = parsed_string.loc[parsed_string.notna()]
+
+    return result
 
 
 def read_uploaded_file(uploaded_file: Any) -> pd.DataFrame:

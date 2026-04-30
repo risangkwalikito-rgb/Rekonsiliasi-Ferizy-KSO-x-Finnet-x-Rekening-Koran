@@ -1,4 +1,4 @@
-# app.py
+# app_before_recon_pick_date.py
 from __future__ import annotations
 
 import io
@@ -115,6 +115,7 @@ OPTIONAL_COLUMN_PATTERNS = {
 MERCHANT_AMOUNT_FALLBACK_INDEX = 20
 PAYMENT_DATETIME_FALLBACK_INDEX = 2
 PREFERRED_SETTLEMENT_SHEET = "detail settlement"
+PG_PROVIDER_TARGET = "FINNET"
 
 
 def normalize_text(value: Any) -> str:
@@ -148,7 +149,7 @@ def parse_number(value: Any) -> float | None:
             text = text.replace(",", "")
     elif text.count(",") == 1 and text.count(".") == 0:
         left, right = text.split(",")
-        if len(right) in {1, 2, 3, 4}:
+        if len(right) in {1, 2, 3, 4, 5, 6}:
             text = f"{left}.{right}"
         else:
             text = text.replace(",", "")
@@ -163,44 +164,24 @@ def parse_number(value: Any) -> float | None:
 
 def parse_datetime_series(series: pd.Series) -> pd.Series:
     raw = series.copy()
+
     if pd.api.types.is_datetime64_any_dtype(raw):
         return pd.to_datetime(raw, errors="coerce")
 
-    parsed = pd.to_datetime(raw, errors="coerce", format="mixed")
-    if parsed.notna().mean() >= 0.6:
-        return parsed
+    parsed_direct = pd.to_datetime(raw, errors="coerce")
+    numeric_raw = pd.to_numeric(raw, errors="coerce")
+    excel_serial = pd.to_datetime(numeric_raw, unit="D", origin="1899-12-30", errors="coerce")
+    combined = parsed_direct.fillna(excel_serial)
 
-    parsed_dayfirst = pd.to_datetime(raw, errors="coerce", format="mixed", dayfirst=True)
-    return parsed_dayfirst
+    if combined.notna().any():
+        return combined
 
+    text_raw = raw.astype(str).str.strip().replace({"": np.nan, "nan": np.nan, "NaT": np.nan})
+    parsed_text = pd.to_datetime(text_raw, errors="coerce", dayfirst=False)
+    if parsed_text.notna().any():
+        return parsed_text
 
-def read_uploaded_file(uploaded_file: Any) -> pd.DataFrame:
-    name = uploaded_file.name.lower()
-    if name.endswith(".csv"):
-        raw = uploaded_file.getvalue()
-        for encoding in ("utf-8", "utf-8-sig", "latin1"):
-            try:
-                return pd.read_csv(io.BytesIO(raw), encoding=encoding)
-            except Exception:
-                continue
-        raise ValueError("File CSV tidak bisa dibaca.")
-
-    workbook = pd.ExcelFile(uploaded_file)
-    sheet_names = workbook.sheet_names
-    normalized_map = {normalize_text(sheet): sheet for sheet in sheet_names}
-
-    if len(sheet_names) > 1 and PREFERRED_SETTLEMENT_SHEET in normalized_map:
-        target_sheet = normalized_map[PREFERRED_SETTLEMENT_SHEET]
-    else:
-        target_sheet = sheet_names[0]
-
-    return pd.read_excel(workbook, sheet_name=target_sheet)
-
-
-def build_master_df() -> pd.DataFrame:
-    master = pd.DataFrame(MASTER_FEE_DATA).copy()
-    master["instrument_key"] = master["instrumen_pembayaran"].map(normalize_text)
-    return master
+    return pd.to_datetime(text_raw, errors="coerce", dayfirst=True)
 
 
 def detect_column_by_patterns(df: pd.DataFrame, patterns: list[str]) -> str | None:
@@ -213,6 +194,31 @@ def detect_column_by_patterns(df: pd.DataFrame, patterns: list[str]) -> str | No
 
 def get_column_by_position(df: pd.DataFrame, index: int) -> str | None:
     return df.columns[index] if len(df.columns) > index else None
+
+
+def select_sheet_name(workbook: pd.ExcelFile) -> str:
+    sheet_names = workbook.sheet_names
+    normalized_map = {normalize_text(sheet): sheet for sheet in sheet_names}
+    preferred_sheet = normalized_map.get(PREFERRED_SETTLEMENT_SHEET)
+    if preferred_sheet:
+        return preferred_sheet
+    return sheet_names[0]
+
+
+def read_uploaded_file(uploaded_file: Any) -> tuple[pd.DataFrame, str]:
+    name = uploaded_file.name.lower()
+    if name.endswith(".csv"):
+        raw = uploaded_file.getvalue()
+        for encoding in ("utf-8", "utf-8-sig", "latin1"):
+            try:
+                return pd.read_csv(io.BytesIO(raw), encoding=encoding), "CSV"
+            except Exception:
+                continue
+        raise ValueError("File CSV tidak bisa dibaca.")
+
+    workbook = pd.ExcelFile(uploaded_file)
+    sheet_name = select_sheet_name(workbook)
+    return pd.read_excel(workbook, sheet_name=sheet_name), sheet_name
 
 
 def resolve_required_columns(df: pd.DataFrame) -> dict[str, str]:
@@ -254,15 +260,19 @@ def resolve_required_columns(df: pd.DataFrame) -> dict[str, str]:
             "merchant_amount": "Merchant Amount / kolom U",
             "pg_provider": "PG Provider",
         }
-        missing_labels = ", ".join(labels[item] for item in missing)
-        raise ValueError(f"Kolom wajib tidak ditemukan: {missing_labels}")
+        raise ValueError(f"Kolom wajib tidak ditemukan: {', '.join(labels[item] for item in missing)}")
+
     return resolved
 
+
 def resolve_optional_columns(df: pd.DataFrame) -> dict[str, str | None]:
-    return {
-        role: detect_column_by_patterns(df, patterns)
-        for role, patterns in OPTIONAL_COLUMN_PATTERNS.items()
-    }
+    return {role: detect_column_by_patterns(df, patterns) for role, patterns in OPTIONAL_COLUMN_PATTERNS.items()}
+
+
+def build_master_df() -> pd.DataFrame:
+    master = pd.DataFrame(MASTER_FEE_DATA).copy()
+    master["instrument_key"] = master["instrumen_pembayaran"].map(normalize_text)
+    return master
 
 
 def build_alias_map(master_df: pd.DataFrame) -> dict[str, str]:
@@ -297,6 +307,7 @@ def resolve_instrument(value: Any, master_df: pd.DataFrame, alias_map: dict[str,
     close = get_close_matches(raw, list(master_keys.keys()), n=1, cutoff=0.75)
     if close:
         return master_keys[close[0]]
+
     return None
 
 
@@ -315,124 +326,155 @@ def calc_fee(amount: Any, fee_rule: Any) -> float | None:
     return fee_value
 
 
-def round_columns(df: pd.DataFrame, columns: list[str], decimals: int = 2) -> pd.DataFrame:
-    result = df.copy()
-    for col in columns:
-        if col in result.columns:
-            result[col] = pd.to_numeric(result[col], errors="coerce").round(decimals)
-    return result
-
-
 def filter_finnet_rows(df: pd.DataFrame, pg_provider_col: str) -> pd.DataFrame:
     provider_norm = df[pg_provider_col].map(normalize_text)
-    finnet_mask = provider_norm.eq("finnet")
-    return df.loc[finnet_mask].copy()
+    return df.loc[provider_norm == normalize_text(PG_PROVIDER_TARGET)].copy()
 
 
-def filter_by_selected_dates(df: pd.DataFrame, payment_datetime_col: str, start_date: date, end_date: date) -> pd.DataFrame:
+def filter_by_selected_dates(
+    df: pd.DataFrame,
+    payment_datetime_col: str,
+    start_date: date,
+    end_date: date,
+) -> pd.DataFrame:
     working = df.copy()
     working["payment_datetime"] = parse_datetime_series(working[payment_datetime_col])
-    working["payment_date"] = working["payment_datetime"].dt.date
     working = working.loc[working["payment_datetime"].notna()].copy()
+    working["payment_date"] = working["payment_datetime"].dt.date
     return working.loc[(working["payment_date"] >= start_date) & (working["payment_date"] <= end_date)].copy()
 
 
-def build_reconciliation(df: pd.DataFrame, column_map: dict[str, str], optional_cols: dict[str, str | None]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def round_columns(df: pd.DataFrame, cols: list[str], decimals: int = 2) -> pd.DataFrame:
+    formatted = df.copy()
+    for col in cols:
+        if col in formatted.columns:
+            formatted[col] = pd.to_numeric(formatted[col], errors="coerce").round(decimals)
+    return formatted
+
+
+def build_reconciliation(
+    df: pd.DataFrame,
+    column_map: dict[str, str],
+    optional_cols: dict[str, str | None],
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     master = build_master_df()
     alias_map = build_alias_map(master)
 
     working = df.copy()
     working["payment_datetime"] = parse_datetime_series(working[column_map["payment_datetime"]])
     working["payment_date"] = working["payment_datetime"].dt.date
-    working["payment_method_raw"] = working[column_map["payment_method"]]
-    working["instrumen_pembayaran"] = working[column_map["payment_method"]].map(lambda x: resolve_instrument(x, master, alias_map))
+    working["payment_method_raw"] = working[column_map["payment_method"]].astype(str).str.strip()
+    working["instrumen_pembayaran"] = working[column_map["payment_method"]].map(
+        lambda x: resolve_instrument(x, master, alias_map)
+    )
     working["merchant_amount_value"] = working[column_map["merchant_amount"]].map(parse_number)
-    working["pg_provider_value"] = working[column_map["pg_provider"]]
+    working["trx_count"] = 1
 
     if optional_cols.get("trx_id"):
         working["trx_id"] = working[optional_cols["trx_id"]].astype(str)
     else:
         working["trx_id"] = None
 
-    if optional_cols.get("customer_name"):
-        working["customer_name"] = working[optional_cols["customer_name"]].astype(str)
-    else:
-        working["customer_name"] = None
-
     merged = working.merge(master, how="left", on="instrumen_pembayaran")
-    merged["expected_admin_fee"] = merged.apply(lambda row: calc_fee(row["merchant_amount_value"], row["admin_fee"]), axis=1)
-    merged["expected_sharing_fee"] = merged.apply(lambda row: calc_fee(row["merchant_amount_value"], row["sharing_fee"]), axis=1)
-    merged["expected_sharing_fee_excl_tax"] = merged.apply(lambda row: calc_fee(row["merchant_amount_value"], row["sharing_fee_excl_tax"]), axis=1)
-    merged["trx_count"] = 1
-
-    detail_columns = [
-        "payment_date",
-        "payment_datetime",
-        "trx_id",
-        "customer_name",
-        "pg_provider_value",
-        "payment_method_raw",
-        "instrumen_pembayaran",
-        "status_pg",
-        "settlement_hari_kerja",
-        "merchant_amount_value",
-        "admin_fee",
-        "sharing_fee",
-        "pajak",
-        "sharing_fee_excl_tax",
-        "expected_admin_fee",
-        "expected_sharing_fee",
-        "expected_sharing_fee_excl_tax",
-    ]
-    detail = merged[[col for col in detail_columns if col in merged.columns]].copy()
-    detail = detail.rename(columns={
-        "pg_provider_value": "pg_provider",
-        "merchant_amount_value": "merchant_amount",
-    })
-    detail = detail.sort_values(["payment_date", "instrumen_pembayaran", "payment_datetime"], na_position="last")
-    detail = round_columns(
-        detail,
-        ["merchant_amount", "expected_admin_fee", "expected_sharing_fee", "expected_sharing_fee_excl_tax"],
-        decimals=2,
+    merged["expected_sharing_fee_excl_tax"] = merged.apply(
+        lambda row: calc_fee(row["merchant_amount_value"], row["sharing_fee_excl_tax"]),
+        axis=1,
     )
-    detail = round_columns(detail, ["admin_fee", "sharing_fee", "sharing_fee_excl_tax", "pajak"], decimals=6)
+
+    detail = merged[
+        [
+            "payment_date",
+            "payment_datetime",
+            "trx_id",
+            "payment_method_raw",
+            "instrumen_pembayaran",
+            "merchant_amount_value",
+            "sharing_fee_excl_tax",
+            "expected_sharing_fee_excl_tax",
+        ]
+    ].rename(
+        columns={
+            "merchant_amount_value": "merchant_amount",
+            "sharing_fee_excl_tax": "master_sharing_fee_excl_tax",
+        }
+    ).copy()
+
+    detail = detail.sort_values(["payment_datetime", "payment_method_raw"], na_position="last")
+    detail = round_columns(detail, ["merchant_amount", "expected_sharing_fee_excl_tax"], 2)
+    detail = round_columns(detail, ["master_sharing_fee_excl_tax"], 6)
 
     summary = (
-        merged.groupby(["payment_date", "instrumen_pembayaran"], dropna=False, as_index=False)
+        detail.groupby(["payment_method_raw", "instrumen_pembayaran", "master_sharing_fee_excl_tax"], dropna=False, as_index=False)
         .agg(
-            trx_count=("trx_count", "sum"),
-            total_merchant_amount=("merchant_amount_value", "sum"),
-            total_expected_admin_fee=("expected_admin_fee", "sum"),
-            total_expected_sharing_fee=("expected_sharing_fee", "sum"),
-            total_expected_sharing_fee_excl_tax=("expected_sharing_fee_excl_tax", "sum"),
+            jumlah_transaksi=("payment_method_raw", "size"),
+            total_merchant_amount=("merchant_amount", "sum"),
+            total_sharing_fee_excl_tax=("expected_sharing_fee_excl_tax", "sum"),
         )
-        .sort_values(["payment_date", "instrumen_pembayaran"], na_position="last")
+        .sort_values(["payment_method_raw"], na_position="last")
     )
-    summary = round_columns(
-        summary,
-        ["total_merchant_amount", "total_expected_admin_fee", "total_expected_sharing_fee", "total_expected_sharing_fee_excl_tax"],
-        decimals=2,
-    )
+    summary = round_columns(summary, ["total_merchant_amount", "total_sharing_fee_excl_tax"], 2)
 
     unmatched = (
-        detail.loc[detail["instrumen_pembayaran"].isna(), ["payment_date", "payment_method_raw"]]
+        detail.loc[detail["instrumen_pembayaran"].isna(), ["payment_method_raw"]]
         .drop_duplicates()
-        .sort_values(["payment_date", "payment_method_raw"], na_position="last")
+        .sort_values(["payment_method_raw"], na_position="last")
+        .rename(columns={"payment_method_raw": "payment_method"})
     )
 
     return detail, summary, unmatched
+
+
+def format_id_number(value: Any, force_decimals: int | None = None) -> str:
+    if value is None or (isinstance(value, float) and np.isnan(value)) or pd.isna(value):
+        return ""
+
+    number = float(value)
+
+    if force_decimals is not None:
+        text = f"{number:,.{force_decimals}f}"
+    else:
+        if abs(number) >= 1:
+            if abs(number - round(number)) < 1e-9:
+                text = f"{number:,.0f}"
+            else:
+                text = f"{number:,.2f}"
+        else:
+            if number == 0:
+                text = "0"
+            else:
+                text = f"{number:,.6f}".rstrip("0").rstrip(".")
+
+    return text.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def build_display_summary(summary_df: pd.DataFrame) -> pd.DataFrame:
+    display = summary_df.copy()
+    display["Payment Method"] = display["payment_method_raw"]
+    display["Master Sharing Fee Exclude Tax"] = display["master_sharing_fee_excl_tax"].map(format_id_number)
+    display["Jumlah Transaksi"] = display["jumlah_transaksi"].map(lambda x: format_id_number(x, 0))
+    display["Total Merchant Amount"] = display["total_merchant_amount"].map(lambda x: format_id_number(x, 2))
+    display["Total Sharing Fee Exclude Tax"] = display["total_sharing_fee_excl_tax"].map(lambda x: format_id_number(x, 2))
+    return display[
+        [
+            "Payment Method",
+            "Master Sharing Fee Exclude Tax",
+            "Jumlah Transaksi",
+            "Total Merchant Amount",
+            "Total Sharing Fee Exclude Tax",
+        ]
+    ]
 
 
 def to_excel_bytes(detail: pd.DataFrame, summary: pd.DataFrame, unmatched: pd.DataFrame) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         detail.to_excel(writer, index=False, sheet_name="Detail Sharing Fee")
-        summary.to_excel(writer, index=False, sheet_name="Rekap Sharing Fee")
+        summary.to_excel(writer, index=False, sheet_name="Rekap Ringkas")
         unmatched.to_excel(writer, index=False, sheet_name="Unmatched Method")
 
         for sheet_name, frame in {
             "Detail Sharing Fee": detail,
-            "Rekap Sharing Fee": summary,
+            "Rekap Ringkas": summary,
             "Unmatched Method": unmatched,
         }.items():
             ws = writer.book[sheet_name]
@@ -443,12 +485,8 @@ def to_excel_bytes(detail: pd.DataFrame, summary: pd.DataFrame, unmatched: pd.Da
     return output.getvalue()
 
 
-
 st.title("Rekonsiliasi Sharing Fee FINNET")
-st.caption(
-    "Aplikasi membaca Payment Date Time, Payment Method, Merchant Amount atau fallback kolom U, dan PG Provider. "
-    "Data yang diproses hanya PG Provider = FINNET."
-)
+st.caption("Pilih rentang tanggal dulu, lalu proses rekonsiliasi. Data yang dihitung hanya PG Provider = FINNET.")
 
 with st.expander("Master fee embedded", expanded=False):
     st.dataframe(build_master_df().drop(columns=["instrument_key"]), use_container_width=True, hide_index=True)
@@ -457,126 +495,117 @@ left_col, right_col = st.columns([1, 2])
 
 with left_col:
     st.subheader("Parameter")
-    date_filter_placeholder = st.empty()
-    provider_placeholder = st.empty()
-    uploaded_file = st.file_uploader(
-        "Upload settlement FINNET",
-        type=["xlsx", "xls", "csv"],
-    )
+    date_container = st.container()
+    uploader_container = st.container()
+    provider_container = st.container()
 
 with right_col:
     st.subheader("Output")
-    output_placeholder = st.empty()
+    output_container = st.container()
+
+with uploader_container:
+    uploaded_file = st.file_uploader("Upload settlement FINNET", type=["xlsx", "xls", "csv"])
+
+run_recon = False
 
 if not uploaded_file:
-    with date_filter_placeholder.container():
-        st.info("Parameter tanggal akan muncul otomatis di atas uploader setelah file settlement FINNET diupload.")
-    with provider_placeholder.container():
-        st.text_input("PG Provider yang diproses", value="FINNET", disabled=True)
-    with output_placeholder.container():
-        st.info("Silakan upload file settlement FINNET untuk mulai rekonsiliasi.")
-
-if uploaded_file:
+    with date_container:
+        st.info("Pilih file settlement FINNET dulu. Parameter tanggal akan tampil otomatis di atas uploader.")
+    with provider_container:
+        st.text_input("PG Provider yang diproses", value=PG_PROVIDER_TARGET, disabled=True)
+    with output_container:
+        st.info("Upload file, pilih rentang tanggal, lalu klik proses rekonsiliasi.")
+else:
     try:
-        source_df = read_uploaded_file(uploaded_file)
+        source_df, sheet_name = read_uploaded_file(uploaded_file)
         column_map = resolve_required_columns(source_df)
         optional_cols = resolve_optional_columns(source_df)
+        finnet_df = filter_finnet_rows(source_df, column_map["pg_provider"])
     except Exception as exc:
-        with output_placeholder.container():
+        with output_container:
             st.error(str(exc))
         st.stop()
 
-    parsed_dates = parse_datetime_series(source_df[column_map["payment_datetime"]])
+    if finnet_df.empty:
+        with output_container:
+            st.error("Tidak ada data dengan PG Provider = FINNET.")
+        st.stop()
+
+    parsed_dates = parse_datetime_series(finnet_df[column_map["payment_datetime"]])
     valid_dates = parsed_dates.dropna().dt.date
 
     if valid_dates.empty:
-        with output_placeholder.container():
-            st.error("Kolom Payment Date Time tidak bisa diparse menjadi tanggal.")
+        with output_container:
+            st.error("Kolom C / Payment Date Time tidak bisa diparse menjadi tanggal.")
         st.stop()
 
     min_date = valid_dates.min()
     max_date = valid_dates.max()
 
-    with date_filter_placeholder.container():
-        selected_range = st.date_input(
-            "Pilih rentang tanggal Payment Date Time",
-            value=(min_date, max_date),
-            min_value=min_date,
-            max_value=max_date,
-        )
+    with date_container:
+        with st.form("filter_form", clear_on_submit=False):
+            st.caption(f"Sheet terpakai: {sheet_name}")
+            picked = st.date_input(
+                "Pilih rentang tanggal Payment Date Time",
+                value=(min_date, max_date),
+                min_value=min_date,
+                max_value=max_date,
+            )
+            st.text_input("PG Provider yang diproses", value=PG_PROVIDER_TARGET, disabled=True)
+            run_recon = st.form_submit_button("Proses rekonsiliasi", type="primary", use_container_width=True)
 
-    with provider_placeholder.container():
-        st.text_input("PG Provider yang diproses", value="FINNET", disabled=True)
-
-    if isinstance(selected_range, tuple) and len(selected_range) == 2:
-        start_date, end_date = selected_range
+    if isinstance(picked, tuple) and len(picked) == 2:
+        start_date, end_date = picked
     else:
-        start_date = end_date = selected_range
+        start_date = end_date = picked
 
-    finnet_df = filter_finnet_rows(source_df, column_map["pg_provider"])
-    non_finnet_rows = len(source_df) - len(finnet_df)
-
-    if finnet_df.empty:
-        with output_placeholder.container():
-            st.error("Tidak ada data dengan PG Provider = FINNET.")
-        st.stop()
-
-    filtered_df = filter_by_selected_dates(
-        finnet_df,
-        payment_datetime_col=column_map["payment_datetime"],
-        start_date=start_date,
-        end_date=end_date,
-    )
-
-    with right_col:
-        st.subheader("Preview data")
-        st.dataframe(source_df.head(20), use_container_width=True)
-
-        st.subheader("Kolom yang dipakai")
-        mapping_preview = pd.DataFrame(
-            [
-                {"Parameter": "Payment Date Time", "Kolom File": column_map["payment_datetime"]},
-                {"Parameter": "Payment Method", "Kolom File": column_map["payment_method"]},
-                {"Parameter": "Merchant Amount / Kolom U", "Kolom File": column_map["merchant_amount"]},
-                {"Parameter": "PG Provider", "Kolom File": column_map["pg_provider"]},
-                {"Parameter": "TRX ID (opsional)", "Kolom File": optional_cols.get("trx_id") or "-"},
-                {"Parameter": "Customer Name (opsional)", "Kolom File": optional_cols.get("customer_name") or "-"},
-            ]
+    with provider_container:
+        st.caption(
+            "Kolom dipakai: "
+            f"Payment Date Time = {column_map['payment_datetime']}, "
+            f"Payment Method = {column_map['payment_method']}, "
+            f"Merchant Amount = {column_map['merchant_amount']}, "
+            f"PG Provider = {column_map['pg_provider']}"
         )
-        st.dataframe(mapping_preview, use_container_width=True, hide_index=True)
 
-        metric1, metric2, metric3 = st.columns(3)
-        metric1.metric("Total row upload", f"{len(source_df):,}")
-        metric2.metric("Row PG Provider = FINNET", f"{len(finnet_df):,}")
-        metric3.metric("Row non-FINNET diabaikan", f"{non_finnet_rows:,}")
-
-        if filtered_df.empty:
-            st.warning("Tidak ada data FINNET pada rentang tanggal yang dipilih.")
+    with output_container:
+        if not run_recon:
+            st.info("Pilih parameter rentang tanggal dulu, lalu klik **Proses rekonsiliasi**.")
+            info1, info2, info3 = st.columns(3)
+            info1.metric("Total row upload", format_id_number(len(source_df), 0))
+            info2.metric("Row FINNET", format_id_number(len(finnet_df), 0))
+            info3.metric("Rentang tanggal tersedia", f"{min_date.strftime('%d-%m-%Y')} s.d. {max_date.strftime('%d-%m-%Y')}")
         else:
-            if st.button("Proses rekonsiliasi", type="primary", use_container_width=True):
-                detail_df, summary_df, unmatched_df = build_reconciliation(filtered_df, column_map, optional_cols)
+            filtered_df = filter_by_selected_dates(
+                finnet_df,
+                payment_datetime_col=column_map["payment_datetime"],
+                start_date=start_date,
+                end_date=end_date,
+            )
 
-                top1, top2, top3, top4 = st.columns(4)
-                top1.metric("Transaksi terproses", f"{len(detail_df):,}")
-                top2.metric("Total merchant amount", f"{detail_df['merchant_amount'].fillna(0).sum():,.2f}")
-                top3.metric("Total expected sharing fee", f"{detail_df['expected_sharing_fee'].fillna(0).sum():,.2f}")
-                top4.metric(
-                    "Payment method belum match",
-                    f"{unmatched_df['payment_method_raw'].nunique() if not unmatched_df.empty else 0:,}",
+            if filtered_df.empty:
+                st.warning("Tidak ada data FINNET pada rentang tanggal yang dipilih.")
+            else:
+                detail_df, summary_df, unmatched_df = build_reconciliation(filtered_df, column_map, optional_cols)
+                display_summary = build_display_summary(summary_df)
+
+                st.markdown(
+                    f"### Periode Payment Date Time: {start_date.strftime('%d-%m-%Y')} s.d. {end_date.strftime('%d-%m-%Y')}"
                 )
 
-                tab1, tab2, tab3 = st.tabs(["Detail Sharing Fee", "Rekap Sharing Fee", "Unmatched Method"])
+                top1, top2, top3 = st.columns(3)
+                top1.metric("Jumlah Transaksi", format_id_number(summary_df["jumlah_transaksi"].sum(), 0))
+                top2.metric("Total Merchant Amount", format_id_number(summary_df["total_merchant_amount"].sum(), 2))
+                top3.metric(
+                    "Total Sharing Fee Exclude Tax",
+                    format_id_number(summary_df["total_sharing_fee_excl_tax"].sum(), 2),
+                )
 
-                with tab1:
-                    st.dataframe(detail_df, use_container_width=True, hide_index=True)
-                with tab2:
-                    st.dataframe(summary_df, use_container_width=True, hide_index=True)
-                with tab3:
-                    if unmatched_df.empty:
-                        st.success("Semua Payment Method berhasil dicocokkan ke master fee.")
-                    else:
-                        st.warning("Masih ada Payment Method yang belum match ke master fee embedded.")
-                        st.dataframe(unmatched_df, use_container_width=True, hide_index=True)
+                st.dataframe(display_summary, use_container_width=True, hide_index=True)
+
+                if not unmatched_df.empty:
+                    st.warning("Masih ada Payment Method yang belum match ke master fee.")
+                    st.dataframe(unmatched_df, use_container_width=True, hide_index=True)
 
                 excel_bytes = to_excel_bytes(detail_df, summary_df, unmatched_df)
                 st.download_button(
@@ -589,11 +618,12 @@ if uploaded_file:
 st.divider()
 st.markdown(
     """
-    **Logika final**
-    - Parameter tanggal tampil otomatis di atas uploader settlement FINNET.
-    - `Payment Date Time` diparse menjadi datetime lalu difilter sesuai rentang tanggal yang dipilih.
-    - `Payment Method` dipakai untuk join ke master fee embedded.
-    - `Merchant Amount` dipakai sebagai amount dasar akumulasi; jika header tidak ada maka fallback ke kolom U.
-    - `PG Provider` wajib FINNET; data provider lain otomatis diabaikan.
+    **Logika aktif**
+    - Parameter tanggal tampil di panel kiri, di atas uploader.
+    - Rentang tanggal dipilih dulu sebelum proses rekonsiliasi.
+    - Jika ada beberapa sheet, app akan memilih `Detail Settlement` bila ada; jika tidak ada, pakai sheet pertama.
+    - `Payment Date Time` diambil dari header yang cocok atau fallback ke kolom C.
+    - `Merchant Amount` diambil dari header yang cocok atau fallback ke kolom U.
+    - Rekap tabel dibuat ringkas per `Payment Method` untuk rentang tanggal yang dipilih.
     """
 )

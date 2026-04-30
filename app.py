@@ -228,7 +228,6 @@ def clamp_date_range(start_date: date, end_date: date, min_date: date, max_date:
     return start_date, end_date
 
 
-@st.cache_data(show_spinner=False)
 def build_master_df() -> pd.DataFrame:
     master = pd.DataFrame(MASTER_FEE_DATA).copy()
     master["method_key"] = master["instrumen_pembayaran"].map(normalize_text)
@@ -389,17 +388,20 @@ def build_branch_summary(
     filtered["cabang"] = filtered["cabang"].replace("", "(Tanpa Cabang)")
     filtered["payment_method"] = filtered["payment_method_raw"].map(lambda value: resolve_payment_method(value, master_df))
     filtered["trx_count"] = 1
+    filtered["payment_method_key"] = filtered["payment_method"].map(normalize_text)
+
+    master_lookup = master_df[["instrumen_pembayaran", "method_key", "sharing_fee"]].drop_duplicates().copy()
 
     merged = filtered.merge(
-        master_df[["instrumen_pembayaran", "sharing_fee"]],
+        master_lookup,
         how="left",
-        left_on="payment_method",
-        right_on="instrumen_pembayaran",
+        left_on="payment_method_key",
+        right_on="method_key",
     )
 
     matched = merged.loc[merged["payment_method"].notna()].copy()
-    matched["Master Sharing Fee"] = matched["sharing_fee"]
-    matched["Total Sharing Fee Exclude Tax"] = matched["trx_count"] * matched["Master Sharing Fee"]
+    matched["Master Sharing Fee"] = pd.to_numeric(matched["sharing_fee"], errors="coerce")
+    matched["Total Sharing Fee Exclude Tax"] = matched["trx_count"] * matched["Master Sharing Fee"].fillna(0)
 
     summary = (
         matched.groupby(["cabang", "payment_method"], dropna=False, as_index=False)
@@ -433,10 +435,19 @@ def build_branch_summary(
         ]
     )
 
+    unmatched_method = merged["payment_method"].isna()
+    missing_master_fee = merged["payment_method"].notna() & merged["sharing_fee"].isna()
+
     unmatched = (
-        merged.loc[merged["payment_method"].isna(), ["cabang", "payment_method_raw"]]
+        merged.loc[unmatched_method | missing_master_fee, ["cabang", "payment_method_raw", "payment_method"]]
         .drop_duplicates()
-        .rename(columns={"cabang": "Cabang", "payment_method_raw": "Payment Method Raw"})
+        .rename(
+            columns={
+                "cabang": "Cabang",
+                "payment_method_raw": "Payment Method Raw",
+                "payment_method": "Resolved Payment Method",
+            }
+        )
         .sort_values(["Cabang", "Payment Method Raw"], na_position="last")
         .reset_index(drop=True)
     )

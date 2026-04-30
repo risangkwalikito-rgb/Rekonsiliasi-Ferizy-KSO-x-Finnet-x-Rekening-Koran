@@ -412,6 +412,7 @@ def prepare_dataset(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     return working, merchant_amount_source
 
 
+
 def build_summary(prepared_df: pd.DataFrame, start_date: date, end_date: date) -> tuple[pd.DataFrame, pd.DataFrame]:
     master_df = build_master_df()
 
@@ -441,91 +442,50 @@ def build_summary(prepared_df: pd.DataFrame, start_date: date, end_date: date) -
 
     matched["trx_count"] = 1
     merged = matched.merge(
-        master_df[["instrumen_pembayaran", "sharing_fee_excl_tax"]],
+        master_df[["instrumen_pembayaran", "sharing_fee"]],
         how="left",
         left_on="payment_method",
         right_on="instrumen_pembayaran",
     )
 
-    merged["sharing_fee_excl_tax_amount"] = merged.apply(
-        lambda row: compute_fee(row["merchant_amount"], row["sharing_fee_excl_tax"]),
-        axis=1,
+    pivot = (
+        merged.groupby(["cabang", "payment_method"], dropna=False, as_index=False)
+        .agg(
+            {
+                "trx_count": "sum",
+                "sharing_fee": "first",
+            }
+        )
+        .sort_values(["cabang", "payment_method"], na_position="last")
+        .reset_index(drop=True)
     )
 
-    pivot = pd.pivot_table(
-        merged,
-        index=["cabang", "payment_method"],
-        values=["trx_count", "merchant_amount", "sharing_fee_excl_tax", "sharing_fee_excl_tax_amount"],
-        aggfunc={
-            "trx_count": "sum",
-            "merchant_amount": "sum",
-            "sharing_fee_excl_tax": "first",
-            "sharing_fee_excl_tax_amount": "sum",
-        },
-        fill_value=0,
-    ).reset_index()
+    pivot["total_sharing_fee_excl_tax"] = pivot["trx_count"] * pivot["sharing_fee"]
 
-    detail = pivot.rename(
+    summary = pivot.rename(
         columns={
             "cabang": "Cabang",
             "payment_method": "Payment Method",
-            "sharing_fee_excl_tax": "Master Sharing Fee Exclude Tax",
             "trx_count": "Jumlah Transaksi",
-            "merchant_amount": "Total Merchant Amount",
-            "sharing_fee_excl_tax_amount": "Total Sharing Fee Exclude Tax",
+            "sharing_fee": "Master Sharing Fee",
+            "total_sharing_fee_excl_tax": "Total Sharing Fee Exclude Tax",
         }
-    ).sort_values(["Cabang", "Payment Method"], na_position="last").reset_index(drop=True)
+    )
 
     ordered_columns = [
         "Cabang",
         "Payment Method",
-        "Master Sharing Fee Exclude Tax",
         "Jumlah Transaksi",
-        "Total Merchant Amount",
+        "Master Sharing Fee",
         "Total Sharing Fee Exclude Tax",
     ]
-    detail = detail[ordered_columns]
-
-    summary_parts: list[pd.DataFrame] = []
-    for cabang, group in detail.groupby("Cabang", dropna=False, sort=False):
-        summary_parts.append(group.reset_index(drop=True))
-
-        subtotal = pd.DataFrame(
-            [
-                {
-                    "Cabang": cabang,
-                    "Payment Method": "SUBTOTAL",
-                    "Master Sharing Fee Exclude Tax": None,
-                    "Jumlah Transaksi": group["Jumlah Transaksi"].sum(),
-                    "Total Merchant Amount": group["Total Merchant Amount"].sum(),
-                    "Total Sharing Fee Exclude Tax": group["Total Sharing Fee Exclude Tax"].sum(),
-                }
-            ],
-            columns=ordered_columns,
-        )
-        summary_parts.append(subtotal)
-
-    summary = pd.concat(summary_parts, ignore_index=True)
-
-    grand_total = pd.DataFrame(
-        [
-            {
-                "Cabang": "SEMUA CABANG",
-                "Payment Method": "GRAND TOTAL",
-                "Master Sharing Fee Exclude Tax": None,
-                "Jumlah Transaksi": detail["Jumlah Transaksi"].sum(),
-                "Total Merchant Amount": detail["Total Merchant Amount"].sum(),
-                "Total Sharing Fee Exclude Tax": detail["Total Sharing Fee Exclude Tax"].sum(),
-            }
-        ],
-        columns=ordered_columns,
-    )
-    summary = pd.concat([summary, grand_total], ignore_index=True)
+    summary = summary[ordered_columns]
 
     return summary, unmatched
 
 
 def load_uploaded_files(uploaded_files: list[Any]) -> tuple[pd.DataFrame | None, pd.DataFrame, list[str], date, date]:
+
     prepared_frames: list[pd.DataFrame] = []
     file_info_rows: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -564,14 +524,12 @@ def load_uploaded_files(uploaded_files: list[Any]) -> tuple[pd.DataFrame | None,
     return combined_df, file_info_df, errors, min_available_date, max_available_date
 
 
+
 def format_summary_for_display(summary_df: pd.DataFrame) -> pd.DataFrame:
     display_df = summary_df.copy()
-    display_df["Master Sharing Fee Exclude Tax"] = display_df["Master Sharing Fee Exclude Tax"].map(
-        lambda value: format_number_id(value, decimals=4, trim_zero=True)
-    )
     display_df["Jumlah Transaksi"] = display_df["Jumlah Transaksi"].map(format_integer_id)
-    display_df["Total Merchant Amount"] = display_df["Total Merchant Amount"].map(
-        lambda value: format_number_id(value, decimals=2)
+    display_df["Master Sharing Fee"] = display_df["Master Sharing Fee"].map(
+        lambda value: format_number_id(value, decimals=4, trim_zero=True)
     )
     display_df["Total Sharing Fee Exclude Tax"] = display_df["Total Sharing Fee Exclude Tax"].map(
         lambda value: format_number_id(value, decimals=2)
@@ -579,23 +537,105 @@ def format_summary_for_display(summary_df: pd.DataFrame) -> pd.DataFrame:
     return display_df
 
 
+def build_branch_sections(summary_df: pd.DataFrame) -> list[tuple[str, pd.DataFrame]]:
+    sections: list[tuple[str, pd.DataFrame]] = []
+
+    for cabang, group in summary_df.groupby("Cabang", dropna=False, sort=True):
+        branch_table = group[
+            [
+                "Payment Method",
+                "Jumlah Transaksi",
+                "Master Sharing Fee",
+                "Total Sharing Fee Exclude Tax",
+            ]
+        ].copy()
+
+        subtotal = pd.DataFrame(
+            [
+                {
+                    "Payment Method": "SUBTOTAL",
+                    "Jumlah Transaksi": group["Jumlah Transaksi"].sum(),
+                    "Master Sharing Fee": None,
+                    "Total Sharing Fee Exclude Tax": group["Total Sharing Fee Exclude Tax"].sum(),
+                }
+            ]
+        )
+        branch_table = pd.concat([branch_table, subtotal], ignore_index=True)
+        sections.append((str(cabang), branch_table))
+
+    return sections
+
+
+def render_branch_tables(summary_df: pd.DataFrame) -> None:
+    for cabang, branch_table in build_branch_sections(summary_df):
+        st.markdown(f"### {cabang}")
+        st.dataframe(format_summary_for_display(branch_table), use_container_width=True, hide_index=True)
+
+    grand_total = pd.DataFrame(
+        [
+            {
+                "Payment Method": "GRAND TOTAL",
+                "Jumlah Transaksi": summary_df["Jumlah Transaksi"].sum(),
+                "Master Sharing Fee": None,
+                "Total Sharing Fee Exclude Tax": summary_df["Total Sharing Fee Exclude Tax"].sum(),
+            }
+        ]
+    )
+    st.markdown("### GRAND TOTAL")
+    st.dataframe(format_summary_for_display(grand_total), use_container_width=True, hide_index=True)
+
+
 def to_excel_bytes(summary_df: pd.DataFrame, unmatched_df: pd.DataFrame, file_info_df: pd.DataFrame) -> bytes:
+    from openpyxl.styles import Font
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        summary_df.to_excel(writer, index=False, sheet_name="Rekonsiliasi")
+        workbook = writer.book
+        if "Sheet" in workbook.sheetnames and len(workbook.sheetnames) == 1:
+            workbook.remove(workbook["Sheet"])
+        worksheet = workbook.create_sheet("Rekonsiliasi")
+        writer.sheets["Rekonsiliasi"] = worksheet
+
+        header_columns = [
+            "Payment Method",
+            "Jumlah Transaksi",
+            "Master Sharing Fee",
+            "Total Sharing Fee Exclude Tax",
+        ]
+
+        current_row = 1
+        for cabang, branch_table in build_branch_sections(summary_df):
+            worksheet.cell(row=current_row, column=1, value=cabang).font = Font(bold=True)
+            current_row += 1
+
+            for column_index, column_name in enumerate(header_columns, start=1):
+                worksheet.cell(row=current_row, column=column_index, value=column_name).font = Font(bold=True)
+            current_row += 1
+
+            for _, row in branch_table.iterrows():
+                for column_index, column_name in enumerate(header_columns, start=1):
+                    worksheet.cell(row=current_row, column=column_index, value=row[column_name])
+                current_row += 1
+
+            current_row += 1
+
+        worksheet.cell(row=current_row, column=1, value="GRAND TOTAL").font = Font(bold=True)
+        current_row += 1
+        for column_index, column_name in enumerate(header_columns, start=1):
+            worksheet.cell(row=current_row, column=column_index, value=column_name).font = Font(bold=True)
+        current_row += 1
+        worksheet.cell(row=current_row, column=1, value="GRAND TOTAL")
+        worksheet.cell(row=current_row, column=2, value=int(summary_df["Jumlah Transaksi"].sum()))
+        worksheet.cell(row=current_row, column=4, value=float(summary_df["Total Sharing Fee Exclude Tax"].sum()))
+
         unmatched_df.to_excel(writer, index=False, sheet_name="Unmatched Method")
         file_info_df.to_excel(writer, index=False, sheet_name="Info File")
 
-        branch_only = summary_df.loc[
-            ~summary_df["Payment Method"].isin(["SUBTOTAL", "GRAND TOTAL"])
-        ].copy()
-
         branch_summary = (
-            branch_only.groupby("Cabang", dropna=False, as_index=False)
+            summary_df.groupby("Cabang", dropna=False, as_index=False)
             .agg(
                 {
                     "Jumlah Transaksi": "sum",
-                    "Total Merchant Amount": "sum",
                     "Total Sharing Fee Exclude Tax": "sum",
                 }
             )
@@ -605,36 +645,45 @@ def to_excel_bytes(summary_df: pd.DataFrame, unmatched_df: pd.DataFrame, file_in
         branch_summary.to_excel(writer, index=False, sheet_name="Ringkasan Cabang")
 
         for sheet_name, dataframe in {
-            "Rekonsiliasi": summary_df,
             "Unmatched Method": unmatched_df,
             "Ringkasan Cabang": branch_summary,
             "Info File": file_info_df,
         }.items():
-            worksheet = writer.book[sheet_name]
-            worksheet.freeze_panes = "A2"
+            sheet = writer.book[sheet_name]
+            sheet.freeze_panes = "A2"
             for column_index, column_name in enumerate(dataframe.columns, start=1):
-                max_len = max([len(str(column_name))] + [len(str(value)) for value in dataframe[column_name].head(200).fillna("")])
-                worksheet.column_dimensions[worksheet.cell(row=1, column=column_index).column_letter].width = min(max_len + 2, 28)
+                values = [len(str(column_name))] + [len(str(value)) for value in dataframe[column_name].head(200).fillna("")]
+                sheet.column_dimensions[sheet.cell(row=1, column=column_index).column_letter].width = min(max(values) + 2, 28)
+
+        worksheet.freeze_panes = "A3"
+        for column_index in range(1, 5):
+            values = []
+            for row in worksheet.iter_rows(min_col=column_index, max_col=column_index):
+                for cell in row:
+                    if cell.value is not None:
+                        values.append(len(str(cell.value)))
+            max_len = max(values) if values else 10
+            worksheet.column_dimensions[worksheet.cell(row=1, column=column_index).column_letter].width = min(max_len + 2, 28)
 
     output.seek(0)
     return output.getvalue()
 
 
 def render_metrics(summary_df: pd.DataFrame) -> None:
-    metric_df = summary_df.loc[~summary_df["Payment Method"].isin(["SUBTOTAL", "GRAND TOTAL"])].copy() if not summary_df.empty else summary_df
-    total_cabang = int(metric_df["Cabang"].nunique()) if not metric_df.empty else 0
-    total_trx = int(metric_df["Jumlah Transaksi"].sum()) if not metric_df.empty else 0
-    total_amount = float(metric_df["Total Merchant Amount"].sum()) if not metric_df.empty else 0.0
-    total_fee = float(metric_df["Total Sharing Fee Exclude Tax"].sum()) if not metric_df.empty else 0.0
+    total_cabang = int(summary_df["Cabang"].nunique()) if not summary_df.empty else 0
+    total_method = int(summary_df["Payment Method"].nunique()) if not summary_df.empty else 0
+    total_trx = int(summary_df["Jumlah Transaksi"].sum()) if not summary_df.empty else 0
+    total_fee = float(summary_df["Total Sharing Fee Exclude Tax"].sum()) if not summary_df.empty else 0.0
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Jumlah Cabang", format_integer_id(total_cabang))
-    col2.metric("Jumlah Transaksi", format_integer_id(total_trx))
-    col3.metric("Total Merchant Amount", format_number_id(total_amount, decimals=2))
+    col2.metric("Jumlah Payment Method", format_integer_id(total_method))
+    col3.metric("Jumlah Transaksi", format_integer_id(total_trx))
     col4.metric("Total Sharing Fee Exclude Tax", format_number_id(total_fee, decimals=2))
 
 
 def get_file_token(uploaded_files: Any) -> str:
+
     if not uploaded_files:
         return "__no_file__"
 
@@ -647,7 +696,7 @@ def get_file_token(uploaded_files: Any) -> str:
 
 def main() -> None:
     st.title("Rekonsiliasi Sharing Fee FINNET")
-    st.caption("Pilih rentang tanggal, upload satu atau beberapa file settlement FINNET, lalu proses rekonsiliasi pivot otomatis per cabang berdasarkan Merchant Name dan master sharing fee yang sudah ditanam di coding.")
+    st.caption("Pilih rentang tanggal, upload satu atau beberapa file settlement FINNET, lalu proses rekonsiliasi pivot otomatis per cabang dengan header cabang terpisah berdasarkan Merchant Name.")
 
     today = date.today()
     st.session_state.setdefault("date_range_widget", (today, today))
@@ -750,7 +799,7 @@ def main() -> None:
             f"**Periode Payment Date Time: {start_date.strftime('%d-%m-%Y')} s.d. {end_date.strftime('%d-%m-%Y')}**"
         )
         render_metrics(summary_df)
-        st.dataframe(format_summary_for_display(summary_df), use_container_width=True, hide_index=True)
+        render_branch_tables(summary_df)
 
         if not unmatched_df.empty:
             st.warning("Ada Payment Method yang belum match ke master fee pada sebagian cabang.")

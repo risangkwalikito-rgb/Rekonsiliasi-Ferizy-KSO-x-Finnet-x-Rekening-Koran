@@ -147,7 +147,7 @@ def parse_number(value: Any) -> float | None:
 def parse_finnet_datetime(series: pd.Series) -> pd.Series:
     text_series = series.astype(str).str.strip()
     extracted = text_series.str.extract(
-        r"^(?P<day>\d{1,2})/(?P<month>\d{1,2})/(?P<year>\d{4})\s+(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})$"
+        r"^(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})\s+(?P<hour>\d{2}):(?P<minute>\d{2}):(?P<second>\d{2})$"
     )
 
     normalized = pd.Series(pd.NA, index=series.index, dtype="object")
@@ -155,9 +155,9 @@ def parse_finnet_datetime(series: pd.Series) -> pd.Series:
 
     if valid_mask.any():
         normalized.loc[valid_mask] = (
-            extracted.loc[valid_mask, "day"].str.zfill(2)
+            extracted.loc[valid_mask, "month"].str.zfill(2)
             + "/"
-            + extracted.loc[valid_mask, "month"].str.zfill(2)
+            + extracted.loc[valid_mask, "day"].str.zfill(2)
             + "/"
             + extracted.loc[valid_mask, "year"]
             + " "
@@ -168,7 +168,7 @@ def parse_finnet_datetime(series: pd.Series) -> pd.Series:
             + extracted.loc[valid_mask, "second"]
         )
 
-    return pd.to_datetime(normalized, format="%d/%m/%Y %H:%M:%S", errors="coerce")
+    return pd.to_datetime(normalized, format="%m/%d/%Y %H:%M:%S", errors="coerce")
 
 
 def read_uploaded_file(uploaded_file: Any) -> pd.DataFrame:
@@ -458,7 +458,7 @@ if uploaded_file:
     finnet_df = prepare_finnet_dates(finnet_df, column_map["payment_datetime"])
     if finnet_df.empty:
         st.error(
-            f"Kolom C (`{column_map['payment_datetime']}`) tidak bisa diparse dengan format d/mm/yyyy hh:mm:ss atau dd/mm/yyyy hh:mm:ss pada data FINNET."
+            f"Kolom C (`{column_map['payment_datetime']}`) tidak bisa diparse dengan format m/dd/yyyy hh:mm:ss atau mm/dd/yyyy hh:mm:ss pada data FINNET."
         )
         st.stop()
 
@@ -479,7 +479,7 @@ if uploaded_file:
 
     st.caption(
         f"Excel dibaca dari sheet pertama. Tanggal diparse dari kolom C (`{column_map['payment_datetime']}`) "
-        f"dengan format `d/mm/yyyy hh:mm:ss` atau `dd/mm/yyyy hh:mm:ss`. Amount diambil dari kolom U (`{column_map['merchant_amount']}`)."
+        f"dengan format `m/dd/yyyy hh:mm:ss` atau `mm/dd/yyyy hh:mm:ss`. Amount diambil dari kolom U (`{column_map['merchant_amount']}`)."
     )
 
     with st.expander("Preview data upload sheet 1", expanded=False):
@@ -529,7 +529,7 @@ st.markdown(
     **Aturan yang dikunci**
     - Excel selalu dibaca dari **sheet 1 / sheet pertama**.
     - Tanggal diambil dari **kolom C**.
-    - Format `Payment Date Time` bisa **d/mm/yyyy hh:mm:ss** atau **dd/mm/yyyy hh:mm:ss**.
+    - Format `Payment Date Time` bisa **m/dd/yyyy hh:mm:ss** atau **mm/dd/yyyy hh:mm:ss**.
     - Amount diambil otomatis dari **kolom U**.
     - Tabel hanya menampilkan `Payment Method` yang ada pada data `PG Provider = FINNET`.
     """

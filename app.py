@@ -388,11 +388,14 @@ def prepare_dataset(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     return working, merchant_amount_source
 
 
-def build_summary(source_df: pd.DataFrame, start_date: date, end_date: date) -> tuple[pd.DataFrame, pd.DataFrame]:
+def build_summary_from_prepared(
+    prepared_df: pd.DataFrame,
+    start_date: date,
+    end_date: date,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     master_df = build_master_df()
-    working, _ = prepare_dataset(source_df)
 
-    filtered = working.loc[working["payment_date"].between(start_date, end_date)].copy()
+    filtered = prepared_df.loc[prepared_df["payment_date"].between(start_date, end_date)].copy()
     if filtered.empty:
         raise ValueError("Tidak ada data FINNET pada rentang tanggal yang dipilih.")
 
@@ -487,10 +490,52 @@ def render_metrics(summary_df: pd.DataFrame) -> None:
     col3.metric("Total Sharing Fee Exclude Tax", format_number_id(total_fee, decimals=2))
 
 
-def get_file_token(uploaded_file: Any) -> str:
-    if uploaded_file is None:
+def get_file_token(uploaded_files: Any) -> str:
+    if uploaded_files is None:
         return "__no_file__"
-    return f"{uploaded_file.name}|{uploaded_file.size}"
+
+    if isinstance(uploaded_files, list):
+        if not uploaded_files:
+            return "__no_file__"
+        return "||".join(f"{uploaded_file.name}|{uploaded_file.size}" for uploaded_file in uploaded_files)
+
+    return f"{uploaded_files.name}|{uploaded_files.size}"
+
+
+def load_uploaded_files(uploaded_files: list[Any]) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    prepared_frames: list[pd.DataFrame] = []
+    file_infos: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    for uploaded_file in uploaded_files:
+        try:
+            file_bytes = uploaded_file.getvalue()
+            source_df, selected_sheet = read_uploaded_file(file_bytes, uploaded_file.name)
+            prepared_df, merchant_amount_source = prepare_dataset(source_df)
+        except Exception as exc:
+            errors.append(f"{uploaded_file.name}: {exc}")
+            continue
+
+        prepared_frames.append(prepared_df.assign(source_file=uploaded_file.name))
+        file_infos.append(
+            {
+                "file_name": uploaded_file.name,
+                "selected_sheet": selected_sheet,
+                "merchant_amount_source": merchant_amount_source,
+                "row_count": int(len(prepared_df)),
+                "min_date": prepared_df["payment_date"].min(),
+                "max_date": prepared_df["payment_date"].max(),
+            }
+        )
+
+    if errors:
+        raise ValueError("\n".join(errors))
+
+    if not prepared_frames:
+        raise ValueError("Tidak ada file valid yang bisa diproses.")
+
+    combined_df = pd.concat(prepared_frames, ignore_index=True)
+    return combined_df, file_infos
 
 
 def main() -> None:
@@ -510,30 +555,28 @@ def main() -> None:
         info_slot = st.container()
 
     with uploader_slot:
-        uploaded_file = st.file_uploader(
+        uploaded_files = st.file_uploader(
             "Settlement FINNET",
             type=["xlsx", "xls", "csv"],
+            accept_multiple_files=True,
             help="Jika ada sheet 'Detail Settlement', sheet itu yang dipakai. Jika tidak ada, app memakai sheet pertama.",
         )
 
     min_available_date = today
     max_available_date = today
-    source_df: pd.DataFrame | None = None
-    selected_sheet = "-"
-    merchant_amount_source = "-"
+    prepared_df: pd.DataFrame | None = None
+    file_infos: list[dict[str, Any]] = []
     load_error = None
 
-    if uploaded_file is not None:
+    if uploaded_files:
         try:
-            file_bytes = uploaded_file.getvalue()
-            source_df, selected_sheet = read_uploaded_file(file_bytes, uploaded_file.name)
-            prepared_df, merchant_amount_source = prepare_dataset(source_df)
+            prepared_df, file_infos = load_uploaded_files(uploaded_files)
             min_available_date = prepared_df["payment_date"].min()
             max_available_date = prepared_df["payment_date"].max()
         except Exception as exc:
             load_error = str(exc)
 
-    current_file_token = get_file_token(uploaded_file)
+    current_file_token = get_file_token(uploaded_files)
     if current_file_token != st.session_state["loaded_file_token"]:
         st.session_state["loaded_file_token"] = current_file_token
         st.session_state["date_range_widget"] = (min_available_date, max_available_date)
@@ -569,15 +612,19 @@ def main() -> None:
         process_clicked = st.button("Proses Rekonsiliasi", type="primary", use_container_width=True)
 
     with info_slot:
-        st.caption(f"Sheet terpilih: {selected_sheet}")
-        st.caption(f"Sumber Merchant Amount: {merchant_amount_source}")
+        st.caption(f"Jumlah file terpilih: {len(uploaded_files) if uploaded_files else 0}")
+        if file_infos:
+            unique_sheets = sorted({str(info["selected_sheet"]) for info in file_infos})
+            unique_sources = sorted({str(info["merchant_amount_source"]) for info in file_infos})
+            st.caption(f"Sheet terpilih: {', '.join(unique_sheets)}")
+            st.caption(f"Sumber Merchant Amount: {', '.join(unique_sources)}")
 
     with right_col:
         if load_error:
             st.error(load_error)
             return
 
-        if uploaded_file is None:
+        if not uploaded_files:
             st.info("Upload file settlement FINNET untuk mulai proses rekonsiliasi.")
             return
 
@@ -586,7 +633,7 @@ def main() -> None:
             return
 
         try:
-            summary_df, unmatched_df = build_summary(source_df, start_date, end_date)
+            summary_df, unmatched_df = build_summary_from_prepared(prepared_df, start_date, end_date)
         except Exception as exc:
             st.error(str(exc))
             return

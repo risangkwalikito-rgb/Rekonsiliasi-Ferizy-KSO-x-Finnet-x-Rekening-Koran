@@ -192,19 +192,23 @@ def resolve_required_columns(df: pd.DataFrame) -> dict[str, str]:
     labels = {
         "payment_datetime": "Payment Date Time",
         "payment_method": "Payment Method",
-        "merchant_amount": "Merchant Amount",
         "pg_provider": "PG Provider",
     }
 
-    for role, patterns in REQUIRED_COLUMN_PATTERNS.items():
-        found = detect_column_by_patterns(df, patterns)
+    for role in ("payment_datetime", "payment_method", "pg_provider"):
+        found = detect_column_by_patterns(df, REQUIRED_COLUMN_PATTERNS[role])
         if found:
             resolved[role] = found
         else:
             missing.append(labels[role])
 
+    if len(df.columns) < 21:
+        missing.append("kolom U untuk Merchant Amount")
+
     if missing:
         raise ValueError(f"Kolom wajib tidak ditemukan: {', '.join(missing)}")
+
+    resolved["merchant_amount"] = df.columns[20]
     return resolved
 
 
@@ -404,14 +408,14 @@ if uploaded_file:
         st.error(str(exc))
         st.stop()
 
-    parsed_dates = parse_datetime_series(source_df[column_map["payment_datetime"]]).dropna().dt.date
-    if parsed_dates.empty:
-        st.error("Kolom Payment Date Time tidak bisa diparse menjadi tanggal.")
-        st.stop()
-
     finnet_df = filter_finnet_rows(source_df, column_map["pg_provider"])
     if finnet_df.empty:
         st.error("Tidak ada data dengan PG Provider = FINNET.")
+        st.stop()
+
+    parsed_dates = parse_datetime_series(finnet_df[column_map["payment_datetime"]]).dropna().dt.date
+    if parsed_dates.empty:
+        st.error("Kolom Payment Date Time tidak bisa diparse menjadi tanggal pada data FINNET.")
         st.stop()
 
     available_dates = sorted(parsed_dates.unique())
@@ -432,6 +436,8 @@ if uploaded_file:
     info1.metric("Total row upload", f"{len(source_df):,}")
     info2.metric("Row PG Provider = FINNET", f"{len(finnet_df):,}")
     info3.metric("Row tanggal terpilih", f"{len(filtered_df):,}")
+
+    st.caption(f"Kolom amount yang dipakai otomatis: kolom U (`{column_map['merchant_amount']}`) sesuai file Excel hasil edit subtotal.")
 
     with st.expander("Preview data upload", expanded=False):
         st.dataframe(source_df.head(20), use_container_width=True, hide_index=True)
@@ -479,6 +485,7 @@ st.markdown(
     """
     **Tampilan ringan**
     - Tanggal dari `Payment Date Time` ditaruh di atas tabel.
+    - Kolom amount diambil otomatis dari **kolom U** file upload.
     - Kolom paling kiri adalah `Payment Method`.
     - Kolom di sebelah kanannya adalah master `Sharing Fee Exclude Tax`.
     - Tabel hanya menampilkan `Payment Method` yang benar-benar ada pada tanggal dan PG Provider yang dipilih.

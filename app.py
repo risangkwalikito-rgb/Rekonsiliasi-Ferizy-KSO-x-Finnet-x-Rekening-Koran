@@ -1,158 +1,192 @@
-# app_before_recon_pick_date.py
+
 from __future__ import annotations
 
+from datetime import date
 import io
 import re
 import unicodedata
-from datetime import date
-from difflib import get_close_matches
 from typing import Any
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
+
 st.set_page_config(page_title="Rekonsiliasi Sharing Fee FINNET", layout="wide")
 
+
 MASTER_FEE_DATA = [
-    {"instrumen_pembayaran": "VA BRI", "status_pg": "Main", "admin_fee": 2220, "sharing_fee": 777, "pajak": 0.11, "sharing_fee_excl_tax": 700, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA BCA", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 278, "pajak": 0.11, "sharing_fee_excl_tax": 250, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA Mandiri", "status_pg": "Main", "admin_fee": 2220, "sharing_fee": 777, "pajak": 0.11, "sharing_fee_excl_tax": 700, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA BM", "status_pg": "Main", "admin_fee": 2220, "sharing_fee": 777, "pajak": 0.11, "sharing_fee_excl_tax": 700, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA BRI", "status_pg": "Main", "admin_fee": 2220.0, "sharing_fee": 777.0, "pajak": 0.11, "sharing_fee_excl_tax": 700.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA BCA", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 278.0, "pajak": 0.11, "sharing_fee_excl_tax": 250.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA Mandiri", "status_pg": "Main", "admin_fee": 2220.0, "sharing_fee": 777.0, "pajak": 0.11, "sharing_fee_excl_tax": 700.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA BM", "status_pg": "Main", "admin_fee": 2220.0, "sharing_fee": 777.0, "pajak": 0.11, "sharing_fee_excl_tax": 700.0, "settlement_hari_kerja": "H+1"},
     {"instrumen_pembayaran": "DANA", "status_pg": "Secondary", "admin_fee": 0.015, "sharing_fee": 0.0012, "pajak": 0.11, "sharing_fee_excl_tax": 0.0011, "settlement_hari_kerja": "H+1"},
     {"instrumen_pembayaran": "OVO", "status_pg": "Secondary", "admin_fee": 0.0167, "sharing_fee": 0.0007, "pajak": 0.11, "sharing_fee_excl_tax": 0.0006, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA BSI", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 777, "pajak": 0.11, "sharing_fee_excl_tax": 700, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA Permata", "status_pg": "Main", "admin_fee": 2220, "sharing_fee": 666, "pajak": 0.11, "sharing_fee_excl_tax": 600, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "ShopeePay", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 310, "pajak": 0.11, "sharing_fee_excl_tax": 279, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "Link Aja", "status_pg": "Main", "admin_fee": 2220, "sharing_fee": 765, "pajak": 0.11, "sharing_fee_excl_tax": 689, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "Gopay", "status_pg": "Secondary", "admin_fee": 0.0167, "sharing_fee": 0, "pajak": 0.11, "sharing_fee_excl_tax": 0, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA CIMB", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 666, "pajak": 0.11, "sharing_fee_excl_tax": 600, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA BTN", "status_pg": "Main", "admin_fee": 2220, "sharing_fee": 888, "pajak": 0.11, "sharing_fee_excl_tax": 800, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA BJB", "status_pg": "Main", "admin_fee": 2220, "sharing_fee": 888, "pajak": 0.11, "sharing_fee_excl_tax": 800, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "Pospay", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 0, "pajak": 0.11, "sharing_fee_excl_tax": 0, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA Danamon", "status_pg": "Main", "admin_fee": 2220, "sharing_fee": 722, "pajak": 0.11, "sharing_fee_excl_tax": 650, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA Sumselbabel", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 722, "pajak": 0.11, "sharing_fee_excl_tax": 650, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA Maybank", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 722, "pajak": 0.11, "sharing_fee_excl_tax": 650, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "BLU", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 904, "pajak": 0.11, "sharing_fee_excl_tax": 814, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA Muamalat", "status_pg": "Main", "admin_fee": 2220, "sharing_fee": 722, "pajak": 0.11, "sharing_fee_excl_tax": 650, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "Indomaret", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 200, "pajak": 0.11, "sharing_fee_excl_tax": 180, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "Alfamart", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 200, "pajak": 0.11, "sharing_fee_excl_tax": 180, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA Maspion", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 0, "pajak": 0.11, "sharing_fee_excl_tax": 0, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA Nagari", "status_pg": "Main", "admin_fee": 2220, "sharing_fee": 722, "pajak": 0.11, "sharing_fee_excl_tax": 650, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA BTPN", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 0, "pajak": 0.11, "sharing_fee_excl_tax": 0, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA Neo Commerce", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 0, "pajak": 0.11, "sharing_fee_excl_tax": 0, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA Sinarmas", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 0, "pajak": 0.11, "sharing_fee_excl_tax": 0, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA Bank DKI", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 722, "pajak": 0.11, "sharing_fee_excl_tax": 650, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "VA BPD Jatim", "status_pg": "Main", "admin_fee": 2220, "sharing_fee": 722, "pajak": 0.11, "sharing_fee_excl_tax": 650, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "PT Pos Indonesia", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 0, "pajak": 0.11, "sharing_fee_excl_tax": 0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA BSI", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 777.0, "pajak": 0.11, "sharing_fee_excl_tax": 700.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA Permata", "status_pg": "Main", "admin_fee": 2220.0, "sharing_fee": 666.0, "pajak": 0.11, "sharing_fee_excl_tax": 600.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "ShopeePay", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 310.0, "pajak": 0.11, "sharing_fee_excl_tax": 279.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "Link Aja", "status_pg": "Main", "admin_fee": 2220.0, "sharing_fee": 765.0, "pajak": 0.11, "sharing_fee_excl_tax": 689.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "Gopay", "status_pg": "Secondary", "admin_fee": 0.0167, "sharing_fee": 0.0, "pajak": 0.11, "sharing_fee_excl_tax": 0.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA CIMB", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 666.0, "pajak": 0.11, "sharing_fee_excl_tax": 600.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA BTN", "status_pg": "Main", "admin_fee": 2220.0, "sharing_fee": 888.0, "pajak": 0.11, "sharing_fee_excl_tax": 800.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA BJB", "status_pg": "Main", "admin_fee": 2220.0, "sharing_fee": 888.0, "pajak": 0.11, "sharing_fee_excl_tax": 800.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "Pospay", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 0.0, "pajak": 0.11, "sharing_fee_excl_tax": 0.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA Danamon", "status_pg": "Main", "admin_fee": 2220.0, "sharing_fee": 722.0, "pajak": 0.11, "sharing_fee_excl_tax": 650.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA Sumselbabel", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 722.0, "pajak": 0.11, "sharing_fee_excl_tax": 650.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA Maybank", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 722.0, "pajak": 0.11, "sharing_fee_excl_tax": 650.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "BLU", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 904.0, "pajak": 0.11, "sharing_fee_excl_tax": 814.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA Muamalat", "status_pg": "Main", "admin_fee": 2220.0, "sharing_fee": 722.0, "pajak": 0.11, "sharing_fee_excl_tax": 650.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "Indomaret", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 200.0, "pajak": 0.11, "sharing_fee_excl_tax": 180.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "Alfamart", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 200.0, "pajak": 0.11, "sharing_fee_excl_tax": 180.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA Maspion", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 0.0, "pajak": 0.11, "sharing_fee_excl_tax": 0.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA Nagari", "status_pg": "Main", "admin_fee": 2220.0, "sharing_fee": 722.0, "pajak": 0.11, "sharing_fee_excl_tax": 650.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA BTPN", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 0.0, "pajak": 0.11, "sharing_fee_excl_tax": 0.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA Neo Commerce", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 0.0, "pajak": 0.11, "sharing_fee_excl_tax": 0.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA Sinarmas", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 0.0, "pajak": 0.11, "sharing_fee_excl_tax": 0.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA Bank DKI", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 722.0, "pajak": 0.11, "sharing_fee_excl_tax": 650.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "VA BPD Jatim", "status_pg": "Main", "admin_fee": 2220.0, "sharing_fee": 722.0, "pajak": 0.11, "sharing_fee_excl_tax": 650.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "PT Pos Indonesia", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 0.0, "pajak": 0.11, "sharing_fee_excl_tax": 0.0, "settlement_hari_kerja": "H+1"},
     {"instrumen_pembayaran": "QRIS", "status_pg": "Secondary", "admin_fee": 0.007, "sharing_fee": 0.0013, "pajak": 0.11, "sharing_fee_excl_tax": 0.0011, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "Pegadaian", "status_pg": "Main", "admin_fee": 2220, "sharing_fee": 1500, "pajak": 0.11, "sharing_fee_excl_tax": 1351, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "Yomart", "status_pg": "Main", "admin_fee": 2220, "sharing_fee": 1500, "pajak": 0.11, "sharing_fee_excl_tax": 1351, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "Delima", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 200, "pajak": 0.11, "sharing_fee_excl_tax": 180, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "OctoClicks", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 0, "pajak": 0.11, "sharing_fee_excl_tax": 0, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "E-Pay BRI", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 0, "pajak": 0.11, "sharing_fee_excl_tax": 0, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "Permata", "status_pg": "Secondary", "admin_fee": 2220, "sharing_fee": 0, "pajak": 0.11, "sharing_fee_excl_tax": 0, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "Credit Card", "status_pg": "Secondary", "admin_fee": 0.015, "sharing_fee": 0, "pajak": 0.11, "sharing_fee_excl_tax": 0, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "Direct Debit", "status_pg": "Secondary", "admin_fee": 0.02, "sharing_fee": 0, "pajak": 0.11, "sharing_fee_excl_tax": 0, "settlement_hari_kerja": "H+1"},
-    {"instrumen_pembayaran": "Finpay Code", "status_pg": "Main", "admin_fee": 2220, "sharing_fee": 1332, "pajak": 0.11, "sharing_fee_excl_tax": 1200, "settlement_hari_kerja": "H+1"},
-
+    {"instrumen_pembayaran": "Pegadaian", "status_pg": "Main", "admin_fee": 2220.0, "sharing_fee": 1500.0, "pajak": 0.11, "sharing_fee_excl_tax": 1351.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "Yomart", "status_pg": "Main", "admin_fee": 2220.0, "sharing_fee": 1500.0, "pajak": 0.11, "sharing_fee_excl_tax": 1351.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "Delima", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 200.0, "pajak": 0.11, "sharing_fee_excl_tax": 180.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "OctoClicks", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 0.0, "pajak": 0.11, "sharing_fee_excl_tax": 0.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "E-Pay BRI", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 0.0, "pajak": 0.11, "sharing_fee_excl_tax": 0.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "Permata", "status_pg": "Secondary", "admin_fee": 2220.0, "sharing_fee": 0.0, "pajak": 0.11, "sharing_fee_excl_tax": 0.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "Credit Card", "status_pg": "Secondary", "admin_fee": 0.015, "sharing_fee": 0.0, "pajak": 0.11, "sharing_fee_excl_tax": 0.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "Direct Debit", "status_pg": "Secondary", "admin_fee": 0.02, "sharing_fee": 0.0, "pajak": 0.11, "sharing_fee_excl_tax": 0.0, "settlement_hari_kerja": "H+1"},
+    {"instrumen_pembayaran": "Finpay Code", "status_pg": "Main", "admin_fee": 2220.0, "sharing_fee": 1332.0, "pajak": 0.11, "sharing_fee_excl_tax": 1200.0, "settlement_hari_kerja": "H+1"},
 ]
 
-MANUAL_ALIAS = {
+ALIAS_MAP = {
+    "va bri": "VA BRI",
     "bri va": "VA BRI",
+    "briva": "VA BRI",
     "virtual account bri": "VA BRI",
-    "va bank bri": "VA BRI",
+    "va bca": "VA BCA",
     "bca va": "VA BCA",
     "virtual account bca": "VA BCA",
+    "va mandiri": "VA Mandiri",
     "mandiri va": "VA Mandiri",
     "virtual account mandiri": "VA Mandiri",
-    "bank mega va": "VA BM",
     "mega va": "VA BM",
-    "bsi va": "VA BSI",
+    "bank mega va": "VA BM",
+    "dana": "DANA",
+    "ovo": "OVO",
+    "va bsi": "VA BSI",
+    "vabsi": "VA BSI",
+    "va permata": "VA Permata",
     "permata va": "VA Permata",
-    "va bank permata": "VA Permata",
+    "shopeepay": "ShopeePay",
+    "shopee pay": "ShopeePay",
+    "link aja": "Link Aja",
     "linkaja": "Link Aja",
-    "go pay": "Gopay",
-    "gopay tokenization": "Gopay",
-    "cimb va": "VA CIMB",
-    "btn va": "VA BTN",
-    "bjb va": "VA BJB",
-    "danamon va": "VA Danamon",
-    "sumselbabel va": "VA Sumselbabel",
-    "maybank va": "VA Maybank",
-    "muamalat va": "VA Muamalat",
-    "nagari va": "VA Nagari",
-    "btpn va": "VA BTPN",
-    "neo commerce va": "VA Neo Commerce",
-    "sinarmas va": "VA Sinarmas",
-    "bank dki va": "VA Bank DKI",
-    "bpd jatim va": "VA BPD Jatim",
-    "pt pos": "PT Pos Indonesia",
-    "pos indonesia": "PT Pos Indonesia",
-    "epay bri": "E-Pay BRI",
-    "e pay bri": "E-Pay BRI",
-    "finpaycode": "Finpay Code",
-    "payment code": "Finpay Code",
-    "briva": "VA BRI",
-    "finpay021": "Finpay Code",
     "tcash": "Link Aja",
+    "gopay": "Gopay",
+    "go pay": "Gopay",
+    "va cimb": "VA CIMB",
+    "vacimb": "VA CIMB",
+    "va btn": "VA BTN",
+    "vabtn": "VA BTN",
+    "va bjb": "VA BJB",
+    "vabjb": "VA BJB",
+    "pospay": "Pospay",
+    "va danamon": "VA Danamon",
+    "vadanamon": "VA Danamon",
+    "va sumselbabel": "VA Sumselbabel",
+    "vasumselbabel": "VA Sumselbabel",
+    "va maybank": "VA Maybank",
+    "vamaybank": "VA Maybank",
+    "blu": "BLU",
+    "va muamalat": "VA Muamalat",
+    "vamuamalat": "VA Muamalat",
+    "indomaret": "Indomaret",
+    "alfamart": "Alfamart",
+    "va maspion": "VA Maspion",
+    "vamaspion": "VA Maspion",
+    "va nagari": "VA Nagari",
+    "vanagari": "VA Nagari",
+    "va btpn": "VA BTPN",
+    "vabtpn": "VA BTPN",
+    "va neo commerce": "VA Neo Commerce",
+    "vaneocommerce": "VA Neo Commerce",
+    "va sinarmas": "VA Sinarmas",
+    "vasinarmas": "VA Sinarmas",
+    "va bank dki": "VA Bank DKI",
+    "vabankdki": "VA Bank DKI",
+    "va bpd jatim": "VA BPD Jatim",
+    "vabpdjatim": "VA BPD Jatim",
+    "pt pos indonesia": "PT Pos Indonesia",
+    "pt pos": "PT Pos Indonesia",
+    "qris": "QRIS",
+    "pegadaian": "Pegadaian",
+    "yomart": "Yomart",
+    "delima": "Delima",
+    "octoclicks": "OctoClicks",
+    "e-pay bri": "E-Pay BRI",
+    "epay bri": "E-Pay BRI",
+    "permata": "Permata",
+    "credit card": "Credit Card",
+    "direct debit": "Direct Debit",
+    "finpay code": "Finpay Code",
+    "finpay021": "Finpay Code",
+    "va bni": "VA BNI",
     "vabni": "VA BNI",
-
+    "bni va": "VA BNI",
 }
-
-REQUIRED_COLUMN_PATTERNS = {
-    "payment_datetime": [r"payment\s*date\s*time"],
-    "payment_method": [r"payment\s*method"],
-    "merchant_amount": [r"merchant\s*amount"],
-    "pg_provider": [r"pg\s*provider"],
-}
-
-OPTIONAL_COLUMN_PATTERNS = {
-    "trx_id": [r"transaction\s*id", r"trx\s*id", r"order\s*id", r"invoice", r"reference"],
-    "customer_name": [r"customer\s*name", r"nama\s*customer", r"payer\s*name"],
-}
-
-MERCHANT_AMOUNT_FALLBACK_INDEX = 20
-PAYMENT_DATETIME_FALLBACK_INDEX = 2
-PREFERRED_SETTLEMENT_SHEET = "detail settlement"
-PG_PROVIDER_TARGET = "FINNET"
 
 
 def normalize_text(value: Any) -> str:
-    if value is None or (isinstance(value, float) and np.isnan(value)):
+    if value is None or pd.isna(value):
         return ""
     text = str(value).strip().lower()
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-    text = text.replace("&", " dan ")
     text = re.sub(r"[_\-/]+", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
+def format_number_id(value: Any, decimals: int = 2, trim_zero: bool = False) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    number = float(value)
+    if trim_zero and number.is_integer():
+        decimals = 0
+    formatted = f"{number:,.{decimals}f}"
+    formatted = formatted.replace(",", "_").replace(".", ",").replace("_", ".")
+    if trim_zero and "," in formatted:
+        formatted = formatted.rstrip("0").rstrip(",")
+    return formatted
+
+
+def format_integer_id(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return f"{int(round(float(value))):,}".replace(",", ".")
+
+
 def parse_number(value: Any) -> float | None:
-    if value is None:
+    if value is None or pd.isna(value):
         return None
-    if isinstance(value, (int, float, np.integer, np.floating)) and not pd.isna(value):
+    if isinstance(value, (int, float)):
         return float(value)
 
     text = str(value).strip()
-    if not text or text.lower() in {"nan", "none", "null", "-"}:
+    if not text:
         return None
 
-    text = text.replace("rp", "").replace("%", "").replace(" ", "")
-    text = re.sub(r"[^\d,.-]", "", text)
+    text = text.replace("Rp", "").replace("rp", "").replace(" ", "")
+    text = re.sub(r"[^0-9,.-]", "", text)
+
+    if not text:
+        return None
 
     if "," in text and "." in text:
         if text.rfind(",") > text.rfind("."):
             text = text.replace(".", "").replace(",", ".")
         else:
             text = text.replace(",", "")
-    elif text.count(",") == 1 and text.count(".") == 0:
-        left, right = text.split(",")
-        if len(right) in {1, 2, 3, 4, 5, 6}:
-            text = f"{left}.{right}"
-        else:
-            text = text.replace(",", "")
+    elif text.count(",") == 1 and "." not in text:
+        text = text.replace(",", ".")
     else:
         text = text.replace(",", "")
 
@@ -162,504 +196,418 @@ def parse_number(value: Any) -> float | None:
         return None
 
 
-def parse_datetime_series(series: pd.Series) -> pd.Series:
-    raw = series.copy()
-
-    if pd.api.types.is_datetime64_any_dtype(raw):
-        return pd.to_datetime(raw, errors="coerce")
-
-    parsed_direct = pd.to_datetime(raw, errors="coerce")
-    numeric_raw = pd.to_numeric(raw, errors="coerce")
-    excel_serial = pd.to_datetime(numeric_raw, unit="D", origin="1899-12-30", errors="coerce")
-    combined = parsed_direct.fillna(excel_serial)
-
-    if combined.notna().any():
-        return combined
-
-    text_raw = raw.astype(str).str.strip().replace({"": np.nan, "nan": np.nan, "NaT": np.nan})
-    parsed_text = pd.to_datetime(text_raw, errors="coerce", dayfirst=False)
-    if parsed_text.notna().any():
-        return parsed_text
-
-    return pd.to_datetime(text_raw, errors="coerce", dayfirst=True)
+def compute_fee(amount: float | None, rule: float | None) -> float | None:
+    if amount is None or pd.isna(amount) or rule is None or pd.isna(rule):
+        return None
+    if float(rule) < 1:
+        return float(amount) * float(rule)
+    return float(rule)
 
 
-def detect_column_by_patterns(df: pd.DataFrame, patterns: list[str]) -> str | None:
-    normalized = {col: normalize_text(col) for col in df.columns}
-    for col, col_norm in normalized.items():
-        if any(re.search(pattern, col_norm) for pattern in patterns):
-            return col
-    return None
+def normalize_date_range(
+    value: Any,
+    fallback_start: date,
+    fallback_end: date,
+) -> tuple[date, date]:
+    if isinstance(value, (tuple, list)):
+        if len(value) >= 2:
+            start_date, end_date = value[0], value[1]
+        elif len(value) == 1:
+            start_date = end_date = value[0]
+        else:
+            start_date, end_date = fallback_start, fallback_end
+    elif value:
+        start_date = end_date = value
+    else:
+        start_date, end_date = fallback_start, fallback_end
+
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+
+    return start_date, end_date
 
 
-def get_column_by_position(df: pd.DataFrame, index: int) -> str | None:
-    return df.columns[index] if len(df.columns) > index else None
+def clamp_date_range(
+    start_date: date,
+    end_date: date,
+    min_date: date,
+    max_date: date,
+) -> tuple[date, date]:
+    start_date = max(min_date, min(start_date, max_date))
+    end_date = max(min_date, min(end_date, max_date))
+    if start_date > end_date:
+        return min_date, max_date
+    return start_date, end_date
 
 
-def select_sheet_name(workbook: pd.ExcelFile) -> str:
-    sheet_names = workbook.sheet_names
-    normalized_map = {normalize_text(sheet): sheet for sheet in sheet_names}
-    preferred_sheet = normalized_map.get(PREFERRED_SETTLEMENT_SHEET)
-    if preferred_sheet:
-        return preferred_sheet
+@st.cache_data(show_spinner=False)
+def build_master_df() -> pd.DataFrame:
+    master = pd.DataFrame(MASTER_FEE_DATA).copy()
+    master["method_key"] = master["instrumen_pembayaran"].map(normalize_text)
+    return master
+
+
+def choose_excel_sheet(sheet_names: list[str]) -> str:
+    for sheet_name in sheet_names:
+        if normalize_text(sheet_name) == "detail settlement":
+            return sheet_name
     return sheet_names[0]
 
 
-def read_uploaded_file(uploaded_file: Any) -> tuple[pd.DataFrame, str]:
-    name = uploaded_file.name.lower()
-    if name.endswith(".csv"):
-        raw = uploaded_file.getvalue()
+@st.cache_data(show_spinner=False)
+def read_uploaded_file(file_bytes: bytes, file_name: str) -> tuple[pd.DataFrame, str]:
+    lower_name = file_name.lower()
+
+    if lower_name.endswith(".csv"):
         for encoding in ("utf-8", "utf-8-sig", "latin1"):
             try:
-                return pd.read_csv(io.BytesIO(raw), encoding=encoding), "CSV"
+                return pd.read_csv(io.BytesIO(file_bytes), encoding=encoding), "CSV"
             except Exception:
                 continue
         raise ValueError("File CSV tidak bisa dibaca.")
 
-    workbook = pd.ExcelFile(uploaded_file)
-    sheet_name = select_sheet_name(workbook)
-    return pd.read_excel(workbook, sheet_name=sheet_name), sheet_name
+    try:
+        workbook = pd.ExcelFile(io.BytesIO(file_bytes))
+    except Exception as exc:
+        raise ValueError(f"File Excel tidak bisa dibaca: {exc}") from exc
+
+    selected_sheet = choose_excel_sheet(workbook.sheet_names)
+
+    try:
+        dataframe = pd.read_excel(workbook, sheet_name=selected_sheet)
+    except Exception as exc:
+        raise ValueError(f"Sheet '{selected_sheet}' tidak bisa dibaca: {exc}") from exc
+
+    return dataframe, selected_sheet
 
 
-def resolve_required_columns(df: pd.DataFrame) -> dict[str, str]:
-    resolved: dict[str, str] = {}
-    missing: list[str] = []
-
-    payment_datetime_col = detect_column_by_patterns(df, REQUIRED_COLUMN_PATTERNS["payment_datetime"])
-    if not payment_datetime_col:
-        payment_datetime_col = get_column_by_position(df, PAYMENT_DATETIME_FALLBACK_INDEX)
-    if payment_datetime_col:
-        resolved["payment_datetime"] = payment_datetime_col
-    else:
-        missing.append("payment_datetime")
-
-    payment_method_col = detect_column_by_patterns(df, REQUIRED_COLUMN_PATTERNS["payment_method"])
-    if payment_method_col:
-        resolved["payment_method"] = payment_method_col
-    else:
-        missing.append("payment_method")
-
-    merchant_amount_col = detect_column_by_patterns(df, REQUIRED_COLUMN_PATTERNS["merchant_amount"])
-    if not merchant_amount_col:
-        merchant_amount_col = get_column_by_position(df, MERCHANT_AMOUNT_FALLBACK_INDEX)
-    if merchant_amount_col:
-        resolved["merchant_amount"] = merchant_amount_col
-    else:
-        missing.append("merchant_amount")
-
-    pg_provider_col = detect_column_by_patterns(df, REQUIRED_COLUMN_PATTERNS["pg_provider"])
-    if pg_provider_col:
-        resolved["pg_provider"] = pg_provider_col
-    else:
-        missing.append("pg_provider")
-
-    if missing:
-        labels = {
-            "payment_datetime": "Payment Date Time / kolom C",
-            "payment_method": "Payment Method",
-            "merchant_amount": "Merchant Amount / kolom U",
-            "pg_provider": "PG Provider",
-        }
-        raise ValueError(f"Kolom wajib tidak ditemukan: {', '.join(labels[item] for item in missing)}")
-
-    return resolved
+def detect_column_by_name(columns: list[str], target: str) -> str | None:
+    target_key = normalize_text(target)
+    for column in columns:
+        if normalize_text(column) == target_key:
+            return column
+    return None
 
 
-def resolve_optional_columns(df: pd.DataFrame) -> dict[str, str | None]:
-    return {role: detect_column_by_patterns(df, patterns) for role, patterns in OPTIONAL_COLUMN_PATTERNS.items()}
+def get_merchant_amount_column(df: pd.DataFrame) -> tuple[str, str]:
+    header_column = detect_column_by_name(df.columns.tolist(), "Merchant Amount")
+    if header_column is not None:
+        return header_column, "header"
+
+    if df.shape[1] >= 21:
+        return df.columns[20], "kolom U"
+
+    raise ValueError("Kolom wajib tidak ditemukan: Merchant Amount / kolom U")
 
 
-def build_master_df() -> pd.DataFrame:
-    master = pd.DataFrame(MASTER_FEE_DATA).copy()
-    master["instrument_key"] = master["instrumen_pembayaran"].map(normalize_text)
-    return master
+def parse_payment_datetime(series: pd.Series) -> pd.Series:
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return pd.to_datetime(series, errors="coerce")
+
+    if pd.api.types.is_numeric_dtype(series):
+        parsed_serial = pd.to_datetime(series, unit="D", origin="1899-12-30", errors="coerce")
+        if parsed_serial.notna().any():
+            return parsed_serial
+
+    text = series.astype(str).str.strip()
+
+    for fmt in (
+        "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%Y %I:%M:%S %p",
+        "%m/%d/%Y %H:%M",
+        "%m/%d/%Y %I:%M %p",
+    ):
+        parsed = pd.to_datetime(text, format=fmt, errors="coerce")
+        if parsed.notna().any():
+            return parsed
+
+    return pd.to_datetime(text, errors="coerce", dayfirst=False)
 
 
-def build_alias_map(master_df: pd.DataFrame) -> dict[str, str]:
-    alias_map = {normalize_text(k): v for k, v in MANUAL_ALIAS.items()}
-    for instrument in master_df["instrumen_pembayaran"]:
-        key = normalize_text(instrument)
-        alias_map[key] = instrument
-        alias_map[key.replace(" ", "")] = instrument
-    return alias_map
-
-
-def resolve_instrument(value: Any, master_df: pd.DataFrame, alias_map: dict[str, str]) -> str | None:
+def resolve_payment_method(value: Any, master_df: pd.DataFrame) -> str | None:
     raw = normalize_text(value)
     if not raw:
         return None
 
-    if raw in alias_map:
-        return alias_map[raw]
+    if raw in ALIAS_MAP:
+        return ALIAS_MAP[raw]
+
+    master_lookup = dict(zip(master_df["method_key"], master_df["instrumen_pembayaran"]))
+
+    if raw in master_lookup:
+        return master_lookup[raw]
 
     compact = raw.replace(" ", "")
-    if compact in alias_map:
-        return alias_map[compact]
+    for key, canonical in master_lookup.items():
+        if compact == key.replace(" ", ""):
+            return canonical
 
-    master_keys = dict(zip(master_df["instrument_key"], master_df["instrumen_pembayaran"]))
-    if raw in master_keys:
-        return master_keys[raw]
-
-    for key, instrument in master_keys.items():
-        if raw == key or raw in key or key in raw:
-            return instrument
-
-    close = get_close_matches(raw, list(master_keys.keys()), n=1, cutoff=0.75)
-    if close:
-        return master_keys[close[0]]
+    for key, canonical in master_lookup.items():
+        if raw in key or key in raw:
+            return canonical
 
     return None
 
 
-def calc_fee(amount: Any, fee_rule: Any) -> float | None:
-    amount_value = parse_number(amount)
-    fee_value = parse_number(fee_rule)
+def prepare_dataset(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
+    if df.shape[1] < 3:
+        raise ValueError("Kolom C / Payment Date Time tidak ditemukan.")
 
-    if fee_value is None:
-        return None
-    if fee_value == 0:
-        return 0.0
-    if fee_value < 1:
-        if amount_value is None:
-            return None
-        return amount_value * fee_value
-    return fee_value
+    payment_method_column = detect_column_by_name(df.columns.tolist(), "Payment Method")
+    if payment_method_column is None:
+        raise ValueError("Kolom wajib tidak ditemukan: Payment Method")
 
+    pg_provider_column = detect_column_by_name(df.columns.tolist(), "PG Provider")
+    if pg_provider_column is None:
+        raise ValueError("Kolom wajib tidak ditemukan: PG Provider")
 
-def filter_finnet_rows(df: pd.DataFrame, pg_provider_col: str) -> pd.DataFrame:
-    provider_norm = df[pg_provider_col].map(normalize_text)
-    return df.loc[provider_norm == normalize_text(PG_PROVIDER_TARGET)].copy()
+    merchant_amount_column, merchant_amount_source = get_merchant_amount_column(df)
 
-
-def filter_by_selected_dates(
-    df: pd.DataFrame,
-    payment_datetime_col: str,
-    start_date: date,
-    end_date: date,
-) -> pd.DataFrame:
     working = df.copy()
-    working["payment_datetime"] = parse_datetime_series(working[payment_datetime_col])
+    working["payment_datetime"] = parse_payment_datetime(working.iloc[:, 2])
+
+    if working["payment_datetime"].notna().sum() == 0:
+        raise ValueError(
+            "Kolom C (Payment Date Time) tidak bisa diparse. Format yang didukung: m/dd/yyyy hh:mm:ss, mm/dd/yyyy hh:mm:ss, atau datetime native Excel."
+        )
+
+    working["payment_date"] = working["payment_datetime"].dt.date
+    working["payment_method_raw"] = working[payment_method_column].astype(str).str.strip()
+    working["pg_provider_raw"] = working[pg_provider_column].astype(str).str.strip()
+    working["merchant_amount"] = working[merchant_amount_column].map(parse_number)
+
     working = working.loc[working["payment_datetime"].notna()].copy()
-    working["payment_date"] = working["payment_datetime"].dt.date
-    return working.loc[(working["payment_date"] >= start_date) & (working["payment_date"] <= end_date)].copy()
+    working = working.loc[working["payment_method_raw"].ne("")].copy()
+    working = working.loc[working["merchant_amount"].notna()].copy()
+    working = working.loc[working["merchant_amount"] != 0].copy()
+    working = working.loc[working["pg_provider_raw"].map(normalize_text).eq("finnet")].copy()
+
+    if working.empty:
+        raise ValueError("Tidak ada data FINNET yang valid setelah filter PG Provider, tanggal, dan amount.")
+
+    return working, merchant_amount_source
 
 
-def round_columns(df: pd.DataFrame, cols: list[str], decimals: int = 2) -> pd.DataFrame:
-    formatted = df.copy()
-    for col in cols:
-        if col in formatted.columns:
-            formatted[col] = pd.to_numeric(formatted[col], errors="coerce").round(decimals)
-    return formatted
+def build_summary(source_df: pd.DataFrame, start_date: date, end_date: date) -> tuple[pd.DataFrame, pd.DataFrame]:
+    master_df = build_master_df()
+    working, _ = prepare_dataset(source_df)
 
+    filtered = working.loc[working["payment_date"].between(start_date, end_date)].copy()
+    if filtered.empty:
+        raise ValueError("Tidak ada data FINNET pada rentang tanggal yang dipilih.")
 
-def build_reconciliation(
-    df: pd.DataFrame,
-    column_map: dict[str, str],
-    optional_cols: dict[str, str | None],
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    master = build_master_df()
-    alias_map = build_alias_map(master)
+    filtered["payment_method"] = filtered["payment_method_raw"].map(lambda value: resolve_payment_method(value, master_df))
+    filtered["trx_count"] = 1
 
-    working = df.copy()
-    working["payment_datetime"] = parse_datetime_series(working[column_map["payment_datetime"]])
-    working["payment_date"] = working["payment_datetime"].dt.date
-    working["payment_method_raw"] = working[column_map["payment_method"]].astype(str).str.strip()
-    working["instrumen_pembayaran"] = working[column_map["payment_method"]].map(
-        lambda x: resolve_instrument(x, master, alias_map)
+    merged = filtered.merge(
+        master_df[["instrumen_pembayaran", "sharing_fee_excl_tax"]],
+        how="left",
+        left_on="payment_method",
+        right_on="instrumen_pembayaran",
     )
-    working["merchant_amount_value"] = working[column_map["merchant_amount"]].map(parse_number)
-    working["trx_count"] = 1
 
-    if optional_cols.get("trx_id"):
-        working["trx_id"] = working[optional_cols["trx_id"]].astype(str)
-    else:
-        working["trx_id"] = None
-
-    merged = working.merge(master, how="left", on="instrumen_pembayaran")
-    merged["expected_sharing_fee_excl_tax"] = merged.apply(
-        lambda row: calc_fee(row["merchant_amount_value"], row["sharing_fee_excl_tax"]),
+    merged["sharing_fee_excl_tax_amount"] = merged.apply(
+        lambda row: compute_fee(row["merchant_amount"], row["sharing_fee_excl_tax"]),
         axis=1,
     )
 
-    detail = merged[
-        [
-            "payment_date",
-            "payment_datetime",
-            "trx_id",
-            "payment_method_raw",
-            "instrumen_pembayaran",
-            "merchant_amount_value",
-            "sharing_fee_excl_tax",
-            "expected_sharing_fee_excl_tax",
-        ]
-    ].rename(
-        columns={
-            "merchant_amount_value": "merchant_amount",
-            "sharing_fee_excl_tax": "master_sharing_fee_excl_tax",
-        }
-    ).copy()
-
-    detail = detail.sort_values(["payment_datetime", "payment_method_raw"], na_position="last")
-    detail = round_columns(detail, ["merchant_amount", "expected_sharing_fee_excl_tax"], 2)
-    detail = round_columns(detail, ["master_sharing_fee_excl_tax"], 6)
-
     summary = (
-        detail.groupby(["payment_method_raw", "instrumen_pembayaran", "master_sharing_fee_excl_tax"], dropna=False, as_index=False)
+        merged.groupby("payment_method", dropna=False, as_index=False)
         .agg(
-            jumlah_transaksi=("payment_method_raw", "size"),
+            jumlah_transaksi=("trx_count", "sum"),
             total_merchant_amount=("merchant_amount", "sum"),
-            total_sharing_fee_excl_tax=("expected_sharing_fee_excl_tax", "sum"),
+            master_sharing_fee_excl_tax=("sharing_fee_excl_tax", "first"),
+            total_sharing_fee_excl_tax=("sharing_fee_excl_tax_amount", "sum"),
         )
-        .sort_values(["payment_method_raw"], na_position="last")
-    )
-    summary = round_columns(summary, ["total_merchant_amount", "total_sharing_fee_excl_tax"], 2)
-
-    unmatched = (
-        detail.loc[detail["instrumen_pembayaran"].isna(), ["payment_method_raw"]]
-        .drop_duplicates()
-        .sort_values(["payment_method_raw"], na_position="last")
-        .rename(columns={"payment_method_raw": "payment_method"})
+        .sort_values("payment_method", na_position="last")
+        .reset_index(drop=True)
     )
 
-    return detail, summary, unmatched
+    summary = summary.loc[summary["payment_method"].notna()].copy()
+    summary = summary.rename(
+        columns={
+            "payment_method": "Payment Method",
+            "master_sharing_fee_excl_tax": "Master Sharing Fee Exclude Tax",
+            "jumlah_transaksi": "Jumlah Transaksi",
+            "total_merchant_amount": "Total Merchant Amount",
+            "total_sharing_fee_excl_tax": "Total Sharing Fee Exclude Tax",
+        }
+    )
+
+    unmatched = merged.loc[merged["payment_method"].isna(), ["payment_method_raw"]].drop_duplicates().rename(
+        columns={"payment_method_raw": "Payment Method Raw"}
+    )
+
+    return summary, unmatched
 
 
-def format_id_number(value: Any, force_decimals: int | None = None) -> str:
-    if value is None or (isinstance(value, float) and np.isnan(value)) or pd.isna(value):
-        return ""
-
-    number = float(value)
-
-    if force_decimals is not None:
-        text = f"{number:,.{force_decimals}f}"
-    else:
-        if abs(number) >= 1:
-            if abs(number - round(number)) < 1e-9:
-                text = f"{number:,.0f}"
-            else:
-                text = f"{number:,.2f}"
-        else:
-            if number == 0:
-                text = "0"
-            else:
-                text = f"{number:,.6f}".rstrip("0").rstrip(".")
-
-    return text.replace(",", "X").replace(".", ",").replace("X", ".")
+def format_summary_for_display(summary_df: pd.DataFrame) -> pd.DataFrame:
+    display_df = summary_df.copy()
+    display_df["Master Sharing Fee Exclude Tax"] = display_df["Master Sharing Fee Exclude Tax"].map(
+        lambda value: format_number_id(value, decimals=4, trim_zero=True)
+    )
+    display_df["Jumlah Transaksi"] = display_df["Jumlah Transaksi"].map(format_integer_id)
+    display_df["Total Merchant Amount"] = display_df["Total Merchant Amount"].map(
+        lambda value: format_number_id(value, decimals=2)
+    )
+    display_df["Total Sharing Fee Exclude Tax"] = display_df["Total Sharing Fee Exclude Tax"].map(
+        lambda value: format_number_id(value, decimals=2)
+    )
+    return display_df
 
 
-def build_display_summary(summary_df: pd.DataFrame) -> pd.DataFrame:
-    display = summary_df.copy()
-    display["Payment Method"] = display["payment_method_raw"]
-    display["Master Sharing Fee Exclude Tax"] = display["master_sharing_fee_excl_tax"].map(format_id_number)
-    display["Jumlah Transaksi"] = display["jumlah_transaksi"].map(lambda x: format_id_number(x, 0))
-    display["Total Merchant Amount"] = display["total_merchant_amount"].map(lambda x: format_id_number(x, 2))
-    display["Total Sharing Fee Exclude Tax"] = display["total_sharing_fee_excl_tax"].map(lambda x: format_id_number(x, 2))
-    return display[
-        [
-            "Payment Method",
-            "Master Sharing Fee Exclude Tax",
-            "Jumlah Transaksi",
-            "Total Merchant Amount",
-            "Total Sharing Fee Exclude Tax",
-        ]
-    ]
-
-
-def to_excel_bytes(detail: pd.DataFrame, summary: pd.DataFrame, unmatched: pd.DataFrame) -> bytes:
+def to_excel_bytes(summary_df: pd.DataFrame, unmatched_df: pd.DataFrame) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        detail.to_excel(writer, index=False, sheet_name="Detail Sharing Fee")
-        summary.to_excel(writer, index=False, sheet_name="Rekap Ringkas")
-        unmatched.to_excel(writer, index=False, sheet_name="Unmatched Method")
+        summary_df.to_excel(writer, index=False, sheet_name="Rekonsiliasi")
+        unmatched_df.to_excel(writer, index=False, sheet_name="Unmatched Method")
 
-        for sheet_name, frame in {
-            "Detail Sharing Fee": detail,
-            "Rekap Ringkas": summary,
-            "Unmatched Method": unmatched,
+        for sheet_name, dataframe in {
+            "Rekonsiliasi": summary_df,
+            "Unmatched Method": unmatched_df,
         }.items():
-            ws = writer.book[sheet_name]
-            ws.freeze_panes = "A2"
-            for idx, col in enumerate(frame.columns, start=1):
-                max_len = max([len(str(col))] + [len(str(v)) for v in frame[col].head(200).fillna("")])
-                ws.column_dimensions[ws.cell(row=1, column=idx).column_letter].width = min(max_len + 2, 28)
+            worksheet = writer.book[sheet_name]
+            worksheet.freeze_panes = "A2"
+            for column_index, column_name in enumerate(dataframe.columns, start=1):
+                max_len = max([len(str(column_name))] + [len(str(value)) for value in dataframe[column_name].head(200).fillna("")])
+                worksheet.column_dimensions[worksheet.cell(row=1, column=column_index).column_letter].width = min(max_len + 2, 28)
+
+    output.seek(0)
     return output.getvalue()
 
 
+def render_metrics(summary_df: pd.DataFrame) -> None:
+    total_trx = int(summary_df["Jumlah Transaksi"].sum()) if not summary_df.empty else 0
+    total_amount = float(summary_df["Total Merchant Amount"].sum()) if not summary_df.empty else 0.0
+    total_fee = float(summary_df["Total Sharing Fee Exclude Tax"].sum()) if not summary_df.empty else 0.0
 
-def normalize_picked_date_range(value: Any) -> tuple[date, date]:
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Jumlah Transaksi", format_integer_id(total_trx))
+    col2.metric("Total Merchant Amount", format_number_id(total_amount, decimals=2))
+    col3.metric("Total Sharing Fee Exclude Tax", format_number_id(total_fee, decimals=2))
+
+
+def get_file_token(uploaded_file: Any) -> str:
+    if uploaded_file is None:
+        return "__no_file__"
+    return f"{uploaded_file.name}|{uploaded_file.size}"
+
+
+def main() -> None:
+    st.title("Rekonsiliasi Sharing Fee FINNET")
+    st.caption("Pilih rentang tanggal, upload settlement FINNET, lalu proses rekonsiliasi berdasarkan master sharing fee yang sudah ditanam di coding.")
+
     today = date.today()
-    if isinstance(value, tuple) and len(value) == 2:
-        start_date, end_date = value
-    elif isinstance(value, list) and len(value) == 2:
-        start_date, end_date = value
-    elif isinstance(value, date):
-        start_date = end_date = value
-    else:
-        start_date = end_date = today
+    st.session_state.setdefault("date_range_widget", (today, today))
+    st.session_state.setdefault("loaded_file_token", "__no_file__")
 
-    if start_date > end_date:
-        start_date, end_date = end_date, start_date
-    return start_date, end_date
+    left_col, right_col = st.columns([1.2, 3.8], gap="large")
 
+    with left_col:
+        date_slot = st.container()
+        uploader_slot = st.container()
+        action_slot = st.container()
+        info_slot = st.container()
 
-
-st.title("Rekonsiliasi Sharing Fee FINNET")
-st.caption("Pilih rentang tanggal dulu, lalu proses rekonsiliasi. Data yang dihitung hanya PG Provider = FINNET.")
-
-today = date.today()
-if "selected_date_range" not in st.session_state:
-    st.session_state["selected_date_range"] = (today, today)
-if "selected_file_signature" not in st.session_state:
-    st.session_state["selected_file_signature"] = None
-
-left_col, right_col = st.columns([1, 2])
-
-with left_col:
-    st.subheader("Parameter")
-    date_placeholder = st.empty()
-    uploader_container = st.container()
-    provider_container = st.container()
-    action_container = st.container()
-
-with right_col:
-    st.subheader("Output")
-    output_container = st.container()
-
-with uploader_container:
-    uploaded_file = st.file_uploader("Upload settlement FINNET", type=["xlsx", "xls", "csv"])
-
-with provider_container:
-    st.text_input("PG Provider yang diproses", value=PG_PROVIDER_TARGET, disabled=True)
-
-source_df: pd.DataFrame | None = None
-finnet_df: pd.DataFrame | None = None
-column_map: dict[str, str] | None = None
-optional_cols: dict[str, str | None] | None = None
-sheet_name = "-"
-min_date = max_date = today
-load_error: str | None = None
-
-if uploaded_file:
-    try:
-        source_df, sheet_name = read_uploaded_file(uploaded_file)
-        column_map = resolve_required_columns(source_df)
-        optional_cols = resolve_optional_columns(source_df)
-        finnet_df = filter_finnet_rows(source_df, column_map["pg_provider"])
-
-        if finnet_df.empty:
-            raise ValueError("Tidak ada data dengan PG Provider = FINNET.")
-
-        parsed_dates = parse_datetime_series(finnet_df[column_map["payment_datetime"]])
-        valid_dates = parsed_dates.dropna().dt.date
-
-        if valid_dates.empty:
-            raise ValueError("Kolom C / Payment Date Time tidak bisa diparse menjadi tanggal.")
-
-        min_date = valid_dates.min()
-        max_date = valid_dates.max()
-
-        file_signature = f"{uploaded_file.name}|{sheet_name}|{min_date.isoformat()}|{max_date.isoformat()}"
-        current_start, current_end = normalize_picked_date_range(st.session_state["selected_date_range"])
-
-        if st.session_state["selected_file_signature"] != file_signature:
-            current_start, current_end = min_date, max_date
-            st.session_state["selected_file_signature"] = file_signature
-        else:
-            current_start = min(max(current_start, min_date), max_date)
-            current_end = min(max(current_end, min_date), max_date)
-            if current_start > current_end:
-                current_start, current_end = min_date, max_date
-
-        st.session_state["selected_date_range"] = (current_start, current_end)
-    except Exception as exc:
-        load_error = str(exc)
-
-with date_placeholder.container():
-    st.caption("Parameter tanggal")
-    if uploaded_file and not load_error:
-        picked = st.date_input(
-            "Pilih rentang tanggal Payment Date Time",
-            value=st.session_state["selected_date_range"],
-            min_value=min_date,
-            max_value=max_date,
-            key="selected_date_range",
-        )
-        st.caption(f"Sheet terpakai: {sheet_name}")
-        st.caption(f"Rentang data tersedia: {min_date.strftime('%d-%m-%Y')} s.d. {max_date.strftime('%d-%m-%Y')}")
-    else:
-        picked = st.date_input(
-            "Pilih rentang tanggal Payment Date Time",
-            value=st.session_state["selected_date_range"],
-            key="selected_date_range",
-        )
-        st.caption("Parameter tanggal sudah tersedia sejak awal. Upload file untuk menyesuaikan rentang dengan data FINNET.")
-
-start_date, end_date = normalize_picked_date_range(picked)
-st.session_state["selected_date_range"] = (start_date, end_date)
-
-with action_container:
-    run_recon = st.button("Proses rekonsiliasi", type="primary", use_container_width=True)
-
-with output_container:
-    if load_error:
-        st.error(load_error)
-    elif not uploaded_file:
-        st.info("Pilih rentang tanggal di kiri, upload file settlement FINNET, lalu klik **Proses rekonsiliasi**.")
-    elif not run_recon:
-        info1, info2, info3 = st.columns(3)
-        info1.metric("Total row upload", format_id_number(len(source_df), 0))
-        info2.metric("Row FINNET", format_id_number(len(finnet_df), 0))
-        info3.metric("Rentang tanggal tersedia", f"{min_date.strftime('%d-%m-%Y')} s.d. {max_date.strftime('%d-%m-%Y')}")
-        st.info("Parameter tanggal sudah siap. Klik **Proses rekonsiliasi** untuk menampilkan hasil.")
-    else:
-        filtered_df = filter_by_selected_dates(
-            finnet_df,
-            payment_datetime_col=column_map["payment_datetime"],
-            start_date=start_date,
-            end_date=end_date,
+    with uploader_slot:
+        uploaded_file = st.file_uploader(
+            "Settlement FINNET",
+            type=["xlsx", "xls", "csv"],
+            help="Jika ada sheet 'Detail Settlement', sheet itu yang dipakai. Jika tidak ada, app memakai sheet pertama.",
         )
 
-        if filtered_df.empty:
-            st.warning("Tidak ada data FINNET pada rentang tanggal yang dipilih.")
-        else:
-            detail_df, summary_df, unmatched_df = build_reconciliation(filtered_df, column_map, optional_cols)
-            display_summary = build_display_summary(summary_df)
+    min_available_date = today
+    max_available_date = today
+    source_df: pd.DataFrame | None = None
+    selected_sheet = "-"
+    merchant_amount_source = "-"
+    load_error = None
 
-            st.markdown(
-                f"### Periode Payment Date Time: {start_date.strftime('%d-%m-%Y')} s.d. {end_date.strftime('%d-%m-%Y')}"
-            )
+    if uploaded_file is not None:
+        try:
+            file_bytes = uploaded_file.getvalue()
+            source_df, selected_sheet = read_uploaded_file(file_bytes, uploaded_file.name)
+            prepared_df, merchant_amount_source = prepare_dataset(source_df)
+            min_available_date = prepared_df["payment_date"].min()
+            max_available_date = prepared_df["payment_date"].max()
+        except Exception as exc:
+            load_error = str(exc)
 
-            top1, top2, top3 = st.columns(3)
-            top1.metric("Jumlah Transaksi", format_id_number(summary_df["jumlah_transaksi"].sum(), 0))
-            top2.metric("Total Merchant Amount", format_id_number(summary_df["total_merchant_amount"].sum(), 2))
-            top3.metric(
-                "Total Sharing Fee Exclude Tax",
-                format_id_number(summary_df["total_sharing_fee_excl_tax"].sum(), 2),
-            )
+    current_file_token = get_file_token(uploaded_file)
+    if current_file_token != st.session_state["loaded_file_token"]:
+        st.session_state["loaded_file_token"] = current_file_token
+        st.session_state["date_range_widget"] = (min_available_date, max_available_date)
 
-            st.dataframe(display_summary, use_container_width=True, hide_index=True)
+    current_start, current_end = normalize_date_range(
+        st.session_state["date_range_widget"],
+        min_available_date,
+        max_available_date,
+    )
+    current_start, current_end = clamp_date_range(
+        current_start,
+        current_end,
+        min_available_date,
+        max_available_date,
+    )
+    st.session_state["date_range_widget"] = (current_start, current_end)
 
-            if not unmatched_df.empty:
-                st.warning("Masih ada Payment Method yang belum match ke master fee.")
-                st.dataframe(unmatched_df, use_container_width=True, hide_index=True)
+    with date_slot:
+        st.markdown("**Parameter Tanggal**")
+        picked_range = st.date_input(
+            "Rentang Payment Date Time",
+            value=st.session_state["date_range_widget"],
+            min_value=min_available_date,
+            max_value=max_available_date,
+            format="DD/MM/YYYY",
+            key="date_range_widget",
+        )
 
-            excel_bytes = to_excel_bytes(detail_df, summary_df, unmatched_df)
-            st.download_button(
-                label="Download hasil rekonsiliasi (.xlsx)",
-                data=excel_bytes,
-                file_name="rekonsiliasi_sharing_fee_finnet.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+    start_date, end_date = normalize_date_range(picked_range, current_start, current_end)
+    start_date, end_date = clamp_date_range(start_date, end_date, min_available_date, max_available_date)
 
-st.divider()
-st.markdown(
-    """
-    **Logika aktif**
-    - Parameter tanggal selalu tampil sejak awal di panel kiri, di atas uploader.
-    - Setelah file diupload, rentang tanggal otomatis menyesuaikan data FINNET yang terbaca.
-    - Jika ada beberapa sheet, app akan memilih `Detail Settlement` bila ada; jika tidak ada, pakai sheet pertama.
-    - `Payment Date Time` diambil dari header yang cocok atau fallback ke kolom C.
-    - `Merchant Amount` diambil dari header yang cocok atau fallback ke kolom U.
-    - Rekap tabel dibuat ringkas per `Payment Method` untuk rentang tanggal yang dipilih.
-    """
-)
+    with action_slot:
+        process_clicked = st.button("Proses Rekonsiliasi", type="primary", use_container_width=True)
+
+    with info_slot:
+        st.caption(f"Sheet terpilih: {selected_sheet}")
+        st.caption(f"Sumber Merchant Amount: {merchant_amount_source}")
+
+    with right_col:
+        if load_error:
+            st.error(load_error)
+            return
+
+        if uploaded_file is None:
+            st.info("Upload file settlement FINNET untuk mulai proses rekonsiliasi.")
+            return
+
+        if not process_clicked:
+            st.info("Pilih rentang tanggal terlebih dahulu, lalu klik **Proses Rekonsiliasi**.")
+            return
+
+        try:
+            summary_df, unmatched_df = build_summary(source_df, start_date, end_date)
+        except Exception as exc:
+            st.error(str(exc))
+            return
+
+        st.markdown(
+            f"**Periode Payment Date Time: {start_date.strftime('%d-%m-%Y')} s.d. {end_date.strftime('%d-%m-%Y')}**"
+        )
+        render_metrics(summary_df)
+        st.dataframe(format_summary_for_display(summary_df), use_container_width=True, hide_index=True)
+
+        if not unmatched_df.empty:
+            st.warning("Ada Payment Method yang belum match ke master fee.")
+            st.dataframe(unmatched_df, use_container_width=True, hide_index=True)
+
+        st.download_button(
+            "Download Hasil Rekonsiliasi",
+            data=to_excel_bytes(summary_df, unmatched_df),
+            file_name=f"rekonsiliasi_sharing_fee_finnet_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+
+if __name__ == "__main__":
+    main()

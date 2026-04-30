@@ -412,21 +412,26 @@ def prepare_dataset(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
     return working, merchant_amount_source
 
 
-def build_summary(source_df: pd.DataFrame, start_date: date, end_date: date) -> tuple[pd.DataFrame, pd.DataFrame]:
+def build_summary(prepared_df: pd.DataFrame, start_date: date, end_date: date) -> tuple[pd.DataFrame, pd.DataFrame]:
     master_df = build_master_df()
-    working, _ = prepare_dataset(source_df)
 
-    filtered = working.loc[working["payment_date"].between(start_date, end_date)].copy()
+    filtered = prepared_df.loc[prepared_df["payment_date"].between(start_date, end_date)].copy()
     if filtered.empty:
         raise ValueError("Tidak ada data FINNET pada rentang tanggal yang dipilih.")
 
     filtered["payment_method"] = filtered["payment_method_raw"].map(lambda value: resolve_payment_method(value, master_df))
 
+    unmatched_columns = ["cabang", "payment_method_raw"]
+    rename_map = {"cabang": "Cabang", "payment_method_raw": "Payment Method Raw"}
+    if "source_file" in filtered.columns:
+        unmatched_columns.insert(0, "source_file")
+        rename_map["source_file"] = "Source File"
+
     unmatched = (
-        filtered.loc[filtered["payment_method"].isna(), ["cabang", "payment_method_raw"]]
+        filtered.loc[filtered["payment_method"].isna(), unmatched_columns]
         .drop_duplicates()
-        .rename(columns={"cabang": "Cabang", "payment_method_raw": "Payment Method Raw"})
-        .sort_values(["Cabang", "Payment Method Raw"], na_position="last")
+        .rename(columns=rename_map)
+        .sort_values(list(rename_map.values()), na_position="last")
         .reset_index(drop=True)
     )
 
@@ -520,6 +525,45 @@ def build_summary(source_df: pd.DataFrame, start_date: date, end_date: date) -> 
     return summary, unmatched
 
 
+def load_uploaded_files(uploaded_files: list[Any]) -> tuple[pd.DataFrame | None, pd.DataFrame, list[str], date, date]:
+    prepared_frames: list[pd.DataFrame] = []
+    file_info_rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    for uploaded_file in uploaded_files:
+        try:
+            file_bytes = uploaded_file.getvalue()
+            source_df, selected_sheet = read_uploaded_file(file_bytes, uploaded_file.name)
+            prepared_df, merchant_amount_source = prepare_dataset(source_df)
+            prepared_df = prepared_df.copy()
+            prepared_df["source_file"] = uploaded_file.name
+            prepared_frames.append(prepared_df)
+
+            file_info_rows.append(
+                {
+                    "File": uploaded_file.name,
+                    "Sheet": selected_sheet,
+                    "Sumber Merchant Amount": merchant_amount_source,
+                    "Min Tanggal": prepared_df["payment_date"].min(),
+                    "Max Tanggal": prepared_df["payment_date"].max(),
+                    "Jumlah Baris FINNET": len(prepared_df),
+                }
+            )
+        except Exception as exc:
+            errors.append(f"{uploaded_file.name}: {exc}")
+
+    file_info_df = pd.DataFrame(file_info_rows)
+
+    if not prepared_frames:
+        return None, file_info_df, errors, date.today(), date.today()
+
+    combined_df = pd.concat(prepared_frames, ignore_index=True)
+    min_available_date = combined_df["payment_date"].min()
+    max_available_date = combined_df["payment_date"].max()
+
+    return combined_df, file_info_df, errors, min_available_date, max_available_date
+
+
 def format_summary_for_display(summary_df: pd.DataFrame) -> pd.DataFrame:
     display_df = summary_df.copy()
     display_df["Master Sharing Fee Exclude Tax"] = display_df["Master Sharing Fee Exclude Tax"].map(
@@ -535,11 +579,12 @@ def format_summary_for_display(summary_df: pd.DataFrame) -> pd.DataFrame:
     return display_df
 
 
-def to_excel_bytes(summary_df: pd.DataFrame, unmatched_df: pd.DataFrame) -> bytes:
+def to_excel_bytes(summary_df: pd.DataFrame, unmatched_df: pd.DataFrame, file_info_df: pd.DataFrame) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         summary_df.to_excel(writer, index=False, sheet_name="Rekonsiliasi")
         unmatched_df.to_excel(writer, index=False, sheet_name="Unmatched Method")
+        file_info_df.to_excel(writer, index=False, sheet_name="Info File")
 
         branch_only = summary_df.loc[
             ~summary_df["Payment Method"].isin(["SUBTOTAL", "GRAND TOTAL"])
@@ -563,6 +608,7 @@ def to_excel_bytes(summary_df: pd.DataFrame, unmatched_df: pd.DataFrame) -> byte
             "Rekonsiliasi": summary_df,
             "Unmatched Method": unmatched_df,
             "Ringkasan Cabang": branch_summary,
+            "Info File": file_info_df,
         }.items():
             worksheet = writer.book[sheet_name]
             worksheet.freeze_panes = "A2"
@@ -588,15 +634,20 @@ def render_metrics(summary_df: pd.DataFrame) -> None:
     col4.metric("Total Sharing Fee Exclude Tax", format_number_id(total_fee, decimals=2))
 
 
-def get_file_token(uploaded_file: Any) -> str:
-    if uploaded_file is None:
+def get_file_token(uploaded_files: Any) -> str:
+    if not uploaded_files:
         return "__no_file__"
-    return f"{uploaded_file.name}|{uploaded_file.size}"
+
+    if not isinstance(uploaded_files, list):
+        uploaded_files = [uploaded_files]
+
+    tokens = sorted(f"{uploaded_file.name}|{uploaded_file.size}" for uploaded_file in uploaded_files)
+    return "||".join(tokens)
 
 
 def main() -> None:
     st.title("Rekonsiliasi Sharing Fee FINNET")
-    st.caption("Pilih rentang tanggal, upload settlement FINNET, lalu proses rekonsiliasi pivot otomatis per cabang berdasarkan Merchant Name dan master sharing fee yang sudah ditanam di coding.")
+    st.caption("Pilih rentang tanggal, upload satu atau beberapa file settlement FINNET, lalu proses rekonsiliasi pivot otomatis per cabang berdasarkan Merchant Name dan master sharing fee yang sudah ditanam di coding.")
 
     today = date.today()
     st.session_state.setdefault("date_range_widget", (today, today))
@@ -611,30 +662,23 @@ def main() -> None:
         info_slot = st.container()
 
     with uploader_slot:
-        uploaded_file = st.file_uploader(
+        uploaded_files = st.file_uploader(
             "Settlement FINNET",
             type=["xlsx", "xls", "csv"],
-            help="Jika ada sheet 'Detail Settlement', sheet itu yang dipakai. Jika tidak ada, app memakai sheet pertama.",
+            accept_multiple_files=True,
+            help="Bisa upload beberapa file sekaligus. Jika ada sheet 'Detail Settlement', sheet itu yang dipakai. Jika tidak ada, app memakai sheet pertama.",
         )
 
     min_available_date = today
     max_available_date = today
-    source_df: pd.DataFrame | None = None
-    selected_sheet = "-"
-    merchant_amount_source = "-"
-    load_error = None
+    prepared_df: pd.DataFrame | None = None
+    file_info_df = pd.DataFrame(columns=["File", "Sheet", "Sumber Merchant Amount", "Min Tanggal", "Max Tanggal", "Jumlah Baris FINNET"])
+    load_errors: list[str] = []
 
-    if uploaded_file is not None:
-        try:
-            file_bytes = uploaded_file.getvalue()
-            source_df, selected_sheet = read_uploaded_file(file_bytes, uploaded_file.name)
-            prepared_df, merchant_amount_source = prepare_dataset(source_df)
-            min_available_date = prepared_df["payment_date"].min()
-            max_available_date = prepared_df["payment_date"].max()
-        except Exception as exc:
-            load_error = str(exc)
+    if uploaded_files:
+        prepared_df, file_info_df, load_errors, min_available_date, max_available_date = load_uploaded_files(uploaded_files)
 
-    current_file_token = get_file_token(uploaded_file)
+    current_file_token = get_file_token(uploaded_files)
     if current_file_token != st.session_state["loaded_file_token"]:
         st.session_state["loaded_file_token"] = current_file_token
         st.session_state["date_range_widget"] = (min_available_date, max_available_date)
@@ -670,25 +714,34 @@ def main() -> None:
         process_clicked = st.button("Proses Rekonsiliasi", type="primary", use_container_width=True)
 
     with info_slot:
-        st.caption(f"Sheet terpilih: {selected_sheet}")
-        st.caption(f"Sumber Merchant Amount: {merchant_amount_source}")
+        st.caption(f"Jumlah file terpilih: {len(uploaded_files) if uploaded_files else 0}")
         st.caption("Cabang dibaca dari kolom Merchant Name.")
+        if not file_info_df.empty:
+            unique_sources = sorted(file_info_df["Sumber Merchant Amount"].astype(str).unique().tolist())
+            st.caption(f"Sumber Merchant Amount: {', '.join(unique_sources)}")
 
     with right_col:
-        if load_error:
-            st.error(load_error)
+        if not uploaded_files:
+            st.info("Upload satu atau beberapa file settlement FINNET untuk mulai proses rekonsiliasi per cabang.")
             return
 
-        if uploaded_file is None:
-            st.info("Upload file settlement FINNET untuk mulai proses rekonsiliasi per cabang.")
+        if load_errors:
+            for error_message in load_errors:
+                st.error(error_message)
+
+        if prepared_df is None or prepared_df.empty:
+            st.warning("Belum ada file valid yang bisa diproses.")
             return
+
+        st.markdown("**Info File Terbaca**")
+        st.dataframe(file_info_df, use_container_width=True, hide_index=True)
 
         if not process_clicked:
             st.info("Pilih rentang tanggal terlebih dahulu, lalu klik **Proses Rekonsiliasi**.")
             return
 
         try:
-            summary_df, unmatched_df = build_summary(source_df, start_date, end_date)
+            summary_df, unmatched_df = build_summary(prepared_df, start_date, end_date)
         except Exception as exc:
             st.error(str(exc))
             return
@@ -705,7 +758,7 @@ def main() -> None:
 
         st.download_button(
             "Download Hasil Rekonsiliasi Per Cabang",
-            data=to_excel_bytes(summary_df, unmatched_df),
+            data=to_excel_bytes(summary_df, unmatched_df, file_info_df),
             file_name=f"rekonsiliasi_sharing_fee_finnet_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )

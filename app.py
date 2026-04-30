@@ -485,19 +485,41 @@ def to_excel_bytes(detail: pd.DataFrame, summary: pd.DataFrame, unmatched: pd.Da
     return output.getvalue()
 
 
+
+def normalize_picked_date_range(value: Any) -> tuple[date, date]:
+    today = date.today()
+    if isinstance(value, tuple) and len(value) == 2:
+        start_date, end_date = value
+    elif isinstance(value, list) and len(value) == 2:
+        start_date, end_date = value
+    elif isinstance(value, date):
+        start_date = end_date = value
+    else:
+        start_date = end_date = today
+
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+    return start_date, end_date
+
+
+
 st.title("Rekonsiliasi Sharing Fee FINNET")
 st.caption("Pilih rentang tanggal dulu, lalu proses rekonsiliasi. Data yang dihitung hanya PG Provider = FINNET.")
 
-with st.expander("Master fee embedded", expanded=False):
-    st.dataframe(build_master_df().drop(columns=["instrument_key"]), use_container_width=True, hide_index=True)
+today = date.today()
+if "selected_date_range" not in st.session_state:
+    st.session_state["selected_date_range"] = (today, today)
+if "selected_file_signature" not in st.session_state:
+    st.session_state["selected_file_signature"] = None
 
 left_col, right_col = st.columns([1, 2])
 
 with left_col:
     st.subheader("Parameter")
-    date_container = st.container()
+    date_placeholder = st.empty()
     uploader_container = st.container()
     provider_container = st.container()
+    action_container = st.container()
 
 with right_col:
     st.subheader("Output")
@@ -506,121 +528,135 @@ with right_col:
 with uploader_container:
     uploaded_file = st.file_uploader("Upload settlement FINNET", type=["xlsx", "xls", "csv"])
 
-run_recon = False
+with provider_container:
+    st.text_input("PG Provider yang diproses", value=PG_PROVIDER_TARGET, disabled=True)
 
-if not uploaded_file:
-    with date_container:
-        st.info("Pilih file settlement FINNET dulu. Parameter tanggal akan tampil otomatis di atas uploader.")
-    with provider_container:
-        st.text_input("PG Provider yang diproses", value=PG_PROVIDER_TARGET, disabled=True)
-    with output_container:
-        st.info("Upload file, pilih rentang tanggal, lalu klik proses rekonsiliasi.")
-else:
+source_df: pd.DataFrame | None = None
+finnet_df: pd.DataFrame | None = None
+column_map: dict[str, str] | None = None
+optional_cols: dict[str, str | None] | None = None
+sheet_name = "-"
+min_date = max_date = today
+load_error: str | None = None
+
+if uploaded_file:
     try:
         source_df, sheet_name = read_uploaded_file(uploaded_file)
         column_map = resolve_required_columns(source_df)
         optional_cols = resolve_optional_columns(source_df)
         finnet_df = filter_finnet_rows(source_df, column_map["pg_provider"])
+
+        if finnet_df.empty:
+            raise ValueError("Tidak ada data dengan PG Provider = FINNET.")
+
+        parsed_dates = parse_datetime_series(finnet_df[column_map["payment_datetime"]])
+        valid_dates = parsed_dates.dropna().dt.date
+
+        if valid_dates.empty:
+            raise ValueError("Kolom C / Payment Date Time tidak bisa diparse menjadi tanggal.")
+
+        min_date = valid_dates.min()
+        max_date = valid_dates.max()
+
+        file_signature = f"{uploaded_file.name}|{sheet_name}|{min_date.isoformat()}|{max_date.isoformat()}"
+        current_start, current_end = normalize_picked_date_range(st.session_state["selected_date_range"])
+
+        if st.session_state["selected_file_signature"] != file_signature:
+            current_start, current_end = min_date, max_date
+            st.session_state["selected_file_signature"] = file_signature
+        else:
+            current_start = min(max(current_start, min_date), max_date)
+            current_end = min(max(current_end, min_date), max_date)
+            if current_start > current_end:
+                current_start, current_end = min_date, max_date
+
+        st.session_state["selected_date_range"] = (current_start, current_end)
     except Exception as exc:
-        with output_container:
-            st.error(str(exc))
-        st.stop()
+        load_error = str(exc)
 
-    if finnet_df.empty:
-        with output_container:
-            st.error("Tidak ada data dengan PG Provider = FINNET.")
-        st.stop()
-
-    parsed_dates = parse_datetime_series(finnet_df[column_map["payment_datetime"]])
-    valid_dates = parsed_dates.dropna().dt.date
-
-    if valid_dates.empty:
-        with output_container:
-            st.error("Kolom C / Payment Date Time tidak bisa diparse menjadi tanggal.")
-        st.stop()
-
-    min_date = valid_dates.min()
-    max_date = valid_dates.max()
-
-    with date_container:
-        with st.form("filter_form", clear_on_submit=False):
-            st.caption(f"Sheet terpakai: {sheet_name}")
-            picked = st.date_input(
-                "Pilih rentang tanggal Payment Date Time",
-                value=(min_date, max_date),
-                min_value=min_date,
-                max_value=max_date,
-            )
-            st.text_input("PG Provider yang diproses", value=PG_PROVIDER_TARGET, disabled=True)
-            run_recon = st.form_submit_button("Proses rekonsiliasi", type="primary", use_container_width=True)
-
-    if isinstance(picked, tuple) and len(picked) == 2:
-        start_date, end_date = picked
+with date_placeholder.container():
+    st.caption("Parameter tanggal")
+    if uploaded_file and not load_error:
+        picked = st.date_input(
+            "Pilih rentang tanggal Payment Date Time",
+            value=st.session_state["selected_date_range"],
+            min_value=min_date,
+            max_value=max_date,
+            key="selected_date_range",
+        )
+        st.caption(f"Sheet terpakai: {sheet_name}")
+        st.caption(f"Rentang data tersedia: {min_date.strftime('%d-%m-%Y')} s.d. {max_date.strftime('%d-%m-%Y')}")
     else:
-        start_date = end_date = picked
+        picked = st.date_input(
+            "Pilih rentang tanggal Payment Date Time",
+            value=st.session_state["selected_date_range"],
+            key="selected_date_range",
+        )
+        st.caption("Parameter tanggal sudah tersedia sejak awal. Upload file untuk menyesuaikan rentang dengan data FINNET.")
 
-    with provider_container:
-        st.caption(
-            "Kolom dipakai: "
-            f"Payment Date Time = {column_map['payment_datetime']}, "
-            f"Payment Method = {column_map['payment_method']}, "
-            f"Merchant Amount = {column_map['merchant_amount']}, "
-            f"PG Provider = {column_map['pg_provider']}"
+start_date, end_date = normalize_picked_date_range(picked)
+st.session_state["selected_date_range"] = (start_date, end_date)
+
+with action_container:
+    run_recon = st.button("Proses rekonsiliasi", type="primary", use_container_width=True)
+
+with output_container:
+    if load_error:
+        st.error(load_error)
+    elif not uploaded_file:
+        st.info("Pilih rentang tanggal di kiri, upload file settlement FINNET, lalu klik **Proses rekonsiliasi**.")
+    elif not run_recon:
+        info1, info2, info3 = st.columns(3)
+        info1.metric("Total row upload", format_id_number(len(source_df), 0))
+        info2.metric("Row FINNET", format_id_number(len(finnet_df), 0))
+        info3.metric("Rentang tanggal tersedia", f"{min_date.strftime('%d-%m-%Y')} s.d. {max_date.strftime('%d-%m-%Y')}")
+        st.info("Parameter tanggal sudah siap. Klik **Proses rekonsiliasi** untuk menampilkan hasil.")
+    else:
+        filtered_df = filter_by_selected_dates(
+            finnet_df,
+            payment_datetime_col=column_map["payment_datetime"],
+            start_date=start_date,
+            end_date=end_date,
         )
 
-    with output_container:
-        if not run_recon:
-            st.info("Pilih parameter rentang tanggal dulu, lalu klik **Proses rekonsiliasi**.")
-            info1, info2, info3 = st.columns(3)
-            info1.metric("Total row upload", format_id_number(len(source_df), 0))
-            info2.metric("Row FINNET", format_id_number(len(finnet_df), 0))
-            info3.metric("Rentang tanggal tersedia", f"{min_date.strftime('%d-%m-%Y')} s.d. {max_date.strftime('%d-%m-%Y')}")
+        if filtered_df.empty:
+            st.warning("Tidak ada data FINNET pada rentang tanggal yang dipilih.")
         else:
-            filtered_df = filter_by_selected_dates(
-                finnet_df,
-                payment_datetime_col=column_map["payment_datetime"],
-                start_date=start_date,
-                end_date=end_date,
+            detail_df, summary_df, unmatched_df = build_reconciliation(filtered_df, column_map, optional_cols)
+            display_summary = build_display_summary(summary_df)
+
+            st.markdown(
+                f"### Periode Payment Date Time: {start_date.strftime('%d-%m-%Y')} s.d. {end_date.strftime('%d-%m-%Y')}"
             )
 
-            if filtered_df.empty:
-                st.warning("Tidak ada data FINNET pada rentang tanggal yang dipilih.")
-            else:
-                detail_df, summary_df, unmatched_df = build_reconciliation(filtered_df, column_map, optional_cols)
-                display_summary = build_display_summary(summary_df)
+            top1, top2, top3 = st.columns(3)
+            top1.metric("Jumlah Transaksi", format_id_number(summary_df["jumlah_transaksi"].sum(), 0))
+            top2.metric("Total Merchant Amount", format_id_number(summary_df["total_merchant_amount"].sum(), 2))
+            top3.metric(
+                "Total Sharing Fee Exclude Tax",
+                format_id_number(summary_df["total_sharing_fee_excl_tax"].sum(), 2),
+            )
 
-                st.markdown(
-                    f"### Periode Payment Date Time: {start_date.strftime('%d-%m-%Y')} s.d. {end_date.strftime('%d-%m-%Y')}"
-                )
+            st.dataframe(display_summary, use_container_width=True, hide_index=True)
 
-                top1, top2, top3 = st.columns(3)
-                top1.metric("Jumlah Transaksi", format_id_number(summary_df["jumlah_transaksi"].sum(), 0))
-                top2.metric("Total Merchant Amount", format_id_number(summary_df["total_merchant_amount"].sum(), 2))
-                top3.metric(
-                    "Total Sharing Fee Exclude Tax",
-                    format_id_number(summary_df["total_sharing_fee_excl_tax"].sum(), 2),
-                )
+            if not unmatched_df.empty:
+                st.warning("Masih ada Payment Method yang belum match ke master fee.")
+                st.dataframe(unmatched_df, use_container_width=True, hide_index=True)
 
-                st.dataframe(display_summary, use_container_width=True, hide_index=True)
-
-                if not unmatched_df.empty:
-                    st.warning("Masih ada Payment Method yang belum match ke master fee.")
-                    st.dataframe(unmatched_df, use_container_width=True, hide_index=True)
-
-                excel_bytes = to_excel_bytes(detail_df, summary_df, unmatched_df)
-                st.download_button(
-                    label="Download hasil rekonsiliasi (.xlsx)",
-                    data=excel_bytes,
-                    file_name="rekonsiliasi_sharing_fee_finnet.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+            excel_bytes = to_excel_bytes(detail_df, summary_df, unmatched_df)
+            st.download_button(
+                label="Download hasil rekonsiliasi (.xlsx)",
+                data=excel_bytes,
+                file_name="rekonsiliasi_sharing_fee_finnet.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
 
 st.divider()
 st.markdown(
     """
     **Logika aktif**
-    - Parameter tanggal tampil di panel kiri, di atas uploader.
-    - Rentang tanggal dipilih dulu sebelum proses rekonsiliasi.
+    - Parameter tanggal selalu tampil sejak awal di panel kiri, di atas uploader.
+    - Setelah file diupload, rentang tanggal otomatis menyesuaikan data FINNET yang terbaca.
     - Jika ada beberapa sheet, app akan memilih `Detail Settlement` bila ada; jika tidak ada, pakai sheet pertama.
     - `Payment Date Time` diambil dari header yang cocok atau fallback ke kolom C.
     - `Merchant Amount` diambil dari header yang cocok atau fallback ke kolom U.

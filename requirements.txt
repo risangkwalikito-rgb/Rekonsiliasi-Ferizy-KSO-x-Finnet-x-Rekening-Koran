@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+python-dateutil
+openpyxl
+xlrd
+pyexcel-xls
+
+msal
+requests

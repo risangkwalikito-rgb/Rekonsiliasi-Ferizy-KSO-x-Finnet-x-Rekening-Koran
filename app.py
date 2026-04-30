@@ -55,7 +55,6 @@ MASTER_FEE_DATA = [
     {"instrumen_pembayaran": "Credit Card", "status_pg": "Secondary", "admin_fee": 0.015, "sharing_fee": 0, "pajak": 0.11, "sharing_fee_excl_tax": 0, "settlement_hari_kerja": "H+1"},
     {"instrumen_pembayaran": "Direct Debit", "status_pg": "Secondary", "admin_fee": 0.02, "sharing_fee": 0, "pajak": 0.11, "sharing_fee_excl_tax": 0, "settlement_hari_kerja": "H+1"},
     {"instrumen_pembayaran": "Finpay Code", "status_pg": "Main", "admin_fee": 2220, "sharing_fee": 1332, "pajak": 0.11, "sharing_fee_excl_tax": 1200, "settlement_hari_kerja": "H+1"},
-
 ]
 
 MANUAL_ALIAS = {
@@ -93,13 +92,10 @@ MANUAL_ALIAS = {
     "e pay bri": "E-Pay BRI",
     "finpaycode": "Finpay Code",
     "payment code": "Finpay Code",
-
 }
 
 REQUIRED_COLUMN_PATTERNS = {
-    "payment_datetime": [r"payment\s*date\s*time"],
     "payment_method": [r"payment\s*method"],
-    "merchant_amount": [r"merchant\s*amount"],
     "pg_provider": [r"pg\s*provider"],
 }
 
@@ -126,7 +122,7 @@ def parse_number(value: Any) -> float | None:
         return None
 
     text = text.replace("rp", "").replace("%", "").replace(" ", "")
-    text = re.sub(r"[^\d,.-]", "", text)
+    text = re.sub(r"[^\d,.\-]", "", text)
 
     if "," in text and "." in text:
         if text.rfind(",") > text.rfind("."):
@@ -148,14 +144,9 @@ def parse_number(value: Any) -> float | None:
         return None
 
 
-def parse_datetime_series(series: pd.Series) -> pd.Series:
-    if pd.api.types.is_datetime64_any_dtype(series):
-        return pd.to_datetime(series, errors="coerce")
-
-    parsed = pd.to_datetime(series, errors="coerce", format="mixed")
-    if parsed.notna().mean() >= 0.6:
-        return parsed
-    return pd.to_datetime(series, errors="coerce", format="mixed", dayfirst=True)
+def parse_finnet_datetime(series: pd.Series) -> pd.Series:
+    text_series = series.astype(str).str.strip()
+    return pd.to_datetime(text_series, format="%d/%m/%Y %H:%M:%S", errors="coerce")
 
 
 def read_uploaded_file(uploaded_file: Any) -> pd.DataFrame:
@@ -168,7 +159,8 @@ def read_uploaded_file(uploaded_file: Any) -> pd.DataFrame:
             except Exception:
                 continue
         raise ValueError("File CSV tidak bisa dibaca.")
-    return pd.read_excel(uploaded_file)
+
+    return pd.read_excel(uploaded_file, sheet_name=0)
 
 
 def build_master_df() -> pd.DataFrame:
@@ -189,26 +181,32 @@ def resolve_required_columns(df: pd.DataFrame) -> dict[str, str]:
     resolved: dict[str, str] = {}
     missing: list[str] = []
 
-    labels = {
-        "payment_datetime": "Payment Date Time",
-        "payment_method": "Payment Method",
-        "pg_provider": "PG Provider",
-    }
-
-    for role in ("payment_datetime", "payment_method", "pg_provider"):
-        found = detect_column_by_patterns(df, REQUIRED_COLUMN_PATTERNS[role])
-        if found:
-            resolved[role] = found
-        else:
-            missing.append(labels[role])
-
     if len(df.columns) < 21:
-        missing.append("kolom U untuk Merchant Amount")
+        missing.extend(
+            [
+                "kolom C untuk Payment Date Time",
+                "kolom U untuk Merchant Amount",
+            ]
+        )
+    else:
+        resolved["payment_datetime"] = df.columns[2]
+        resolved["merchant_amount"] = df.columns[20]
+
+    payment_method_col = detect_column_by_patterns(df, REQUIRED_COLUMN_PATTERNS["payment_method"])
+    if payment_method_col:
+        resolved["payment_method"] = payment_method_col
+    else:
+        missing.append("Payment Method")
+
+    pg_provider_col = detect_column_by_patterns(df, REQUIRED_COLUMN_PATTERNS["pg_provider"])
+    if pg_provider_col:
+        resolved["pg_provider"] = pg_provider_col
+    else:
+        missing.append("PG Provider")
 
     if missing:
         raise ValueError(f"Kolom wajib tidak ditemukan: {', '.join(missing)}")
 
-    resolved["merchant_amount"] = df.columns[20]
     return resolved
 
 
@@ -275,12 +273,15 @@ def filter_finnet_rows(df: pd.DataFrame, pg_provider_col: str) -> pd.DataFrame:
     return df.loc[provider_norm.eq("finnet")].copy()
 
 
-def filter_by_selected_date(df: pd.DataFrame, payment_datetime_col: str, selected_date: date) -> pd.DataFrame:
+def prepare_finnet_dates(df: pd.DataFrame, payment_datetime_col: str) -> pd.DataFrame:
     working = df.copy()
-    working["payment_datetime"] = parse_datetime_series(working[payment_datetime_col])
+    working["payment_datetime"] = parse_finnet_datetime(working[payment_datetime_col])
     working["payment_date"] = working["payment_datetime"].dt.date
-    working = working.loc[working["payment_datetime"].notna()].copy()
-    return working.loc[working["payment_date"] == selected_date].copy()
+    return working.loc[working["payment_datetime"].notna()].copy()
+
+
+def filter_by_selected_date(df: pd.DataFrame, selected_date: date) -> pd.DataFrame:
+    return df.loc[df["payment_date"] == selected_date].copy()
 
 
 def build_reconciliation(df: pd.DataFrame, column_map: dict[str, str]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -288,15 +289,21 @@ def build_reconciliation(df: pd.DataFrame, column_map: dict[str, str]) -> tuple[
     alias_map = build_alias_map(master)
 
     working = df.copy()
-    working["payment_datetime"] = parse_datetime_series(working[column_map["payment_datetime"]])
-    working["payment_date"] = working["payment_datetime"].dt.date
     working["payment_method_raw"] = working[column_map["payment_method"]].astype(str).str.strip()
-    working["instrumen_pembayaran"] = working[column_map["payment_method"]].map(lambda x: resolve_instrument(x, master, alias_map))
+    working["instrumen_pembayaran"] = working[column_map["payment_method"]].map(
+        lambda value: resolve_instrument(value, master, alias_map)
+    )
     working["merchant_amount"] = working[column_map["merchant_amount"]].map(parse_number)
 
     merged = working.merge(master, how="left", on="instrumen_pembayaran")
-    merged["expected_sharing_fee"] = merged.apply(lambda row: calc_fee(row["merchant_amount"], row["sharing_fee"]), axis=1)
-    merged["expected_sharing_fee_excl_tax"] = merged.apply(lambda row: calc_fee(row["merchant_amount"], row["sharing_fee_excl_tax"]), axis=1)
+    merged["expected_sharing_fee"] = merged.apply(
+        lambda row: calc_fee(row["merchant_amount"], row["sharing_fee"]),
+        axis=1,
+    )
+    merged["expected_sharing_fee_excl_tax"] = merged.apply(
+        lambda row: calc_fee(row["merchant_amount"], row["sharing_fee_excl_tax"]),
+        axis=1,
+    )
     merged["payment_method_display"] = merged["instrumen_pembayaran"].fillna(merged["payment_method_raw"])
     merged["trx_count"] = 1
 
@@ -317,7 +324,13 @@ def build_reconciliation(df: pd.DataFrame, column_map: dict[str, str]) -> tuple[
     detail = detail.sort_values(["payment_method_display", "payment_datetime"], na_position="last")
     detail = round_columns(
         detail,
-        ["merchant_amount", "sharing_fee_excl_tax", "expected_sharing_fee_excl_tax", "sharing_fee", "expected_sharing_fee"],
+        [
+            "merchant_amount",
+            "sharing_fee_excl_tax",
+            "expected_sharing_fee_excl_tax",
+            "sharing_fee",
+            "expected_sharing_fee",
+        ],
         decimals=2,
     )
 
@@ -333,7 +346,11 @@ def build_reconciliation(df: pd.DataFrame, column_map: dict[str, str]) -> tuple[
     )
     summary = round_columns(
         summary,
-        ["master_sharing_fee_excl_tax", "total_merchant_amount", "total_expected_sharing_fee_excl_tax"],
+        [
+            "master_sharing_fee_excl_tax",
+            "total_merchant_amount",
+            "total_expected_sharing_fee_excl_tax",
+        ],
         decimals=2,
     )
 
@@ -358,14 +375,15 @@ def build_display_table(summary_df: pd.DataFrame) -> pd.DataFrame:
             "total_expected_sharing_fee_excl_tax": "Total Sharing Fee Exclude Tax",
         }
     )
-    ordered_columns = [
-        "Payment Method",
-        "Master Sharing Fee Exclude Tax",
-        "Jumlah Transaksi",
-        "Total Merchant Amount",
-        "Total Sharing Fee Exclude Tax",
+    return display[
+        [
+            "Payment Method",
+            "Master Sharing Fee Exclude Tax",
+            "Jumlah Transaksi",
+            "Total Merchant Amount",
+            "Total Sharing Fee Exclude Tax",
+        ]
     ]
-    return display[ordered_columns]
 
 
 def to_excel_bytes(display_df: pd.DataFrame, detail_df: pd.DataFrame, unmatched_df: pd.DataFrame) -> bytes:
@@ -389,11 +407,13 @@ def to_excel_bytes(display_df: pd.DataFrame, detail_df: pd.DataFrame, unmatched_
 
 
 st.title("Rekonsiliasi Sharing Fee FINNET")
-st.caption("Ringan dan fokus: pilih 1 tanggal, proses PG Provider FINNET, lalu tampilkan tabel ringkas per Payment Method.")
+st.caption("Pilih 1 tanggal dari Payment Date Time kolom C, proses hanya PG Provider FINNET, dan baca Excel selalu dari sheet pertama.")
 
 with st.expander("Lihat master fee embedded", expanded=False):
     st.dataframe(
-        build_master_df().drop(columns=["instrument_key"])[["instrumen_pembayaran", "sharing_fee_excl_tax", "sharing_fee", "admin_fee", "status_pg"]],
+        build_master_df().drop(columns=["instrument_key"])[
+            ["instrumen_pembayaran", "sharing_fee_excl_tax", "sharing_fee", "admin_fee", "status_pg"]
+        ],
         use_container_width=True,
         hide_index=True,
     )
@@ -413,12 +433,14 @@ if uploaded_file:
         st.error("Tidak ada data dengan PG Provider = FINNET.")
         st.stop()
 
-    parsed_dates = parse_datetime_series(finnet_df[column_map["payment_datetime"]]).dropna().dt.date
-    if parsed_dates.empty:
-        st.error("Kolom Payment Date Time tidak bisa diparse menjadi tanggal pada data FINNET.")
+    finnet_df = prepare_finnet_dates(finnet_df, column_map["payment_datetime"])
+    if finnet_df.empty:
+        st.error(
+            f"Kolom C (`{column_map['payment_datetime']}`) tidak bisa diparse dengan format dd/mm/yyyy hh:mm:ss pada data FINNET."
+        )
         st.stop()
 
-    available_dates = sorted(parsed_dates.unique())
+    available_dates = sorted(finnet_df["payment_date"].dropna().unique())
     selected_date = st.date_input(
         "Pilih tanggal Payment Date Time",
         value=max(available_dates),
@@ -426,20 +448,19 @@ if uploaded_file:
         max_value=max(available_dates),
     )
 
-    filtered_df = filter_by_selected_date(
-        finnet_df,
-        payment_datetime_col=column_map["payment_datetime"],
-        selected_date=selected_date,
-    )
+    filtered_df = filter_by_selected_date(finnet_df, selected_date)
 
     info1, info2, info3 = st.columns(3)
     info1.metric("Total row upload", f"{len(source_df):,}")
     info2.metric("Row PG Provider = FINNET", f"{len(finnet_df):,}")
     info3.metric("Row tanggal terpilih", f"{len(filtered_df):,}")
 
-    st.caption(f"Kolom amount yang dipakai otomatis: kolom U (`{column_map['merchant_amount']}`) sesuai file Excel hasil edit subtotal.")
+    st.caption(
+        f"Excel dibaca dari sheet pertama. Tanggal diparse dari kolom C (`{column_map['payment_datetime']}`) "
+        f"dengan format `dd/mm/yyyy hh:mm:ss`. Amount diambil dari kolom U (`{column_map['merchant_amount']}`)."
+    )
 
-    with st.expander("Preview data upload", expanded=False):
+    with st.expander("Preview data upload sheet 1", expanded=False):
         st.dataframe(source_df.head(20), use_container_width=True, hide_index=True)
 
     if filtered_df.empty:
@@ -483,11 +504,11 @@ if uploaded_file:
 st.divider()
 st.markdown(
     """
-    **Tampilan ringan**
-    - Tanggal dari `Payment Date Time` ditaruh di atas tabel.
-    - Kolom amount diambil otomatis dari **kolom U** file upload.
-    - Kolom paling kiri adalah `Payment Method`.
-    - Kolom di sebelah kanannya adalah master `Sharing Fee Exclude Tax`.
-    - Tabel hanya menampilkan `Payment Method` yang benar-benar ada pada tanggal dan PG Provider yang dipilih.
+    **Aturan yang dikunci**
+    - Excel selalu dibaca dari **sheet 1 / sheet pertama**.
+    - Tanggal diambil dari **kolom C**.
+    - Format `Payment Date Time` harus **dd/mm/yyyy hh:mm:ss**.
+    - Amount diambil otomatis dari **kolom U**.
+    - Tabel hanya menampilkan `Payment Method` yang ada pada data `PG Provider = FINNET`.
     """
 )

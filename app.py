@@ -397,9 +397,20 @@ def build_summary(source_df: pd.DataFrame, start_date: date, end_date: date) -> 
         raise ValueError("Tidak ada data FINNET pada rentang tanggal yang dipilih.")
 
     filtered["payment_method"] = filtered["payment_method_raw"].map(lambda value: resolve_payment_method(value, master_df))
-    filtered["trx_count"] = 1
 
-    merged = filtered.merge(
+    unmatched = (
+        filtered.loc[filtered["payment_method"].isna(), ["payment_method_raw"]]
+        .drop_duplicates()
+        .rename(columns={"payment_method_raw": "Payment Method Raw"})
+        .reset_index(drop=True)
+    )
+
+    matched = filtered.loc[filtered["payment_method"].notna()].copy()
+    if matched.empty:
+        raise ValueError("Semua Payment Method pada data FINNET belum match ke master fee.")
+
+    matched["trx_count"] = 1
+    merged = matched.merge(
         master_df[["instrumen_pembayaran", "sharing_fee_excl_tax"]],
         how="left",
         left_on="payment_method",
@@ -411,32 +422,42 @@ def build_summary(source_df: pd.DataFrame, start_date: date, end_date: date) -> 
         axis=1,
     )
 
-    summary = (
-        merged.groupby("payment_method", dropna=False, as_index=False)
-        .agg(
-            jumlah_transaksi=("trx_count", "sum"),
-            total_merchant_amount=("merchant_amount", "sum"),
-            master_sharing_fee_excl_tax=("sharing_fee_excl_tax", "first"),
-            total_sharing_fee_excl_tax=("sharing_fee_excl_tax_amount", "sum"),
-        )
-        .sort_values("payment_method", na_position="last")
-        .reset_index(drop=True)
-    )
+    pivot = pd.pivot_table(
+        merged,
+        index="payment_method",
+        values=["trx_count", "merchant_amount", "sharing_fee_excl_tax", "sharing_fee_excl_tax_amount"],
+        aggfunc={
+            "trx_count": "sum",
+            "merchant_amount": "sum",
+            "sharing_fee_excl_tax": "first",
+            "sharing_fee_excl_tax_amount": "sum",
+        },
+        fill_value=0,
+    ).reset_index()
 
-    summary = summary.loc[summary["payment_method"].notna()].copy()
-    summary = summary.rename(
+    summary = pivot.rename(
         columns={
             "payment_method": "Payment Method",
-            "master_sharing_fee_excl_tax": "Master Sharing Fee Exclude Tax",
-            "jumlah_transaksi": "Jumlah Transaksi",
-            "total_merchant_amount": "Total Merchant Amount",
-            "total_sharing_fee_excl_tax": "Total Sharing Fee Exclude Tax",
+            "sharing_fee_excl_tax": "Master Sharing Fee Exclude Tax",
+            "trx_count": "Jumlah Transaksi",
+            "merchant_amount": "Total Merchant Amount",
+            "sharing_fee_excl_tax_amount": "Total Sharing Fee Exclude Tax",
         }
+    ).sort_values("Payment Method", na_position="last").reset_index(drop=True)
+
+    grand_total = pd.DataFrame(
+        [
+            {
+                "Payment Method": "GRAND TOTAL",
+                "Master Sharing Fee Exclude Tax": pd.NA,
+                "Jumlah Transaksi": summary["Jumlah Transaksi"].sum(),
+                "Total Merchant Amount": summary["Total Merchant Amount"].sum(),
+                "Total Sharing Fee Exclude Tax": summary["Total Sharing Fee Exclude Tax"].sum(),
+            }
+        ]
     )
 
-    unmatched = merged.loc[merged["payment_method"].isna(), ["payment_method_raw"]].drop_duplicates().rename(
-        columns={"payment_method_raw": "Payment Method Raw"}
-    )
+    summary = pd.concat([summary, grand_total], ignore_index=True)
 
     return summary, unmatched
 
@@ -477,9 +498,10 @@ def to_excel_bytes(summary_df: pd.DataFrame, unmatched_df: pd.DataFrame) -> byte
 
 
 def render_metrics(summary_df: pd.DataFrame) -> None:
-    total_trx = int(summary_df["Jumlah Transaksi"].sum()) if not summary_df.empty else 0
-    total_amount = float(summary_df["Total Merchant Amount"].sum()) if not summary_df.empty else 0.0
-    total_fee = float(summary_df["Total Sharing Fee Exclude Tax"].sum()) if not summary_df.empty else 0.0
+    metric_df = summary_df.loc[summary_df["Payment Method"] != "GRAND TOTAL"].copy() if not summary_df.empty else summary_df
+    total_trx = int(metric_df["Jumlah Transaksi"].sum()) if not metric_df.empty else 0
+    total_amount = float(metric_df["Total Merchant Amount"].sum()) if not metric_df.empty else 0.0
+    total_fee = float(metric_df["Total Sharing Fee Exclude Tax"].sum()) if not metric_df.empty else 0.0
 
     col1, col2, col3 = st.columns(3)
     col1.metric("Jumlah Transaksi", format_integer_id(total_trx))

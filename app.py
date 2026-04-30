@@ -365,6 +365,45 @@ def round_columns(df: pd.DataFrame, columns: list[str], decimals: int = 2) -> pd
     return result
 
 
+def format_number_id(value: Any, decimals: int = 2, strip_trailing_zero: bool = False) -> str:
+    if value is None or pd.isna(value):
+        return ""
+
+    number = float(value)
+    formatted = f"{number:,.{decimals}f}"
+    formatted = formatted.replace(",", "_").replace(".", ",").replace("_", ".")
+
+    if strip_trailing_zero and "," in formatted:
+        formatted = formatted.rstrip("0").rstrip(",")
+
+    return formatted
+
+
+def format_integer_id(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return f"{int(value):,}".replace(",", ".")
+
+
+def build_display_table_view(display_df: pd.DataFrame) -> pd.DataFrame:
+    view = display_df.copy()
+    if "Master Sharing Fee Exclude Tax" in view.columns:
+        view["Master Sharing Fee Exclude Tax"] = view["Master Sharing Fee Exclude Tax"].map(
+            lambda value: format_number_id(value, decimals=4, strip_trailing_zero=True)
+        )
+    if "Jumlah Transaksi" in view.columns:
+        view["Jumlah Transaksi"] = view["Jumlah Transaksi"].map(format_integer_id)
+    if "Total Merchant Amount" in view.columns:
+        view["Total Merchant Amount"] = view["Total Merchant Amount"].map(
+            lambda value: format_number_id(value, decimals=2)
+        )
+    if "Total Sharing Fee Exclude Tax" in view.columns:
+        view["Total Sharing Fee Exclude Tax"] = view["Total Sharing Fee Exclude Tax"].map(
+            lambda value: format_number_id(value, decimals=2)
+        )
+    return view
+
+
 def filter_finnet_rows(df: pd.DataFrame, pg_provider_col: str) -> pd.DataFrame:
     provider_norm = df[pg_provider_col].map(normalize_text)
     return df.loc[provider_norm.eq("finnet")].copy()
@@ -377,8 +416,9 @@ def prepare_finnet_dates(df: pd.DataFrame, payment_datetime_col: str) -> pd.Data
     return working.loc[working["payment_datetime"].notna()].copy()
 
 
-def filter_by_selected_date(df: pd.DataFrame, selected_date: date) -> pd.DataFrame:
-    return df.loc[df["payment_date"] == selected_date].copy()
+def filter_by_date_range(df: pd.DataFrame, start_date: date, end_date: date) -> pd.DataFrame:
+    mask = (df["payment_date"] >= start_date) & (df["payment_date"] <= end_date)
+    return df.loc[mask].copy()
 
 
 def build_reconciliation(df: pd.DataFrame, column_map: dict[str, str]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -423,13 +463,12 @@ def build_reconciliation(df: pd.DataFrame, column_map: dict[str, str]) -> tuple[
         detail,
         [
             "merchant_amount",
-            "sharing_fee_excl_tax",
             "expected_sharing_fee_excl_tax",
-            "sharing_fee",
             "expected_sharing_fee",
         ],
         decimals=2,
     )
+    detail = round_columns(detail, ["sharing_fee_excl_tax", "sharing_fee"], decimals=4)
 
     summary = (
         merged.groupby(["payment_date", "payment_method_display"], dropna=False, as_index=False)
@@ -441,10 +480,10 @@ def build_reconciliation(df: pd.DataFrame, column_map: dict[str, str]) -> tuple[
         )
         .sort_values(["payment_method_display"], na_position="last")
     )
+    summary = round_columns(summary, ["master_sharing_fee_excl_tax"], decimals=4)
     summary = round_columns(
         summary,
         [
-            "master_sharing_fee_excl_tax",
             "total_merchant_amount",
             "total_expected_sharing_fee_excl_tax",
         ],
@@ -463,6 +502,17 @@ def build_reconciliation(df: pd.DataFrame, column_map: dict[str, str]) -> tuple[
 
 def build_display_table(summary_df: pd.DataFrame) -> pd.DataFrame:
     display = summary_df.copy()
+    display = (
+        display.groupby("payment_method_display", dropna=False, as_index=False)
+        .agg(
+            master_sharing_fee_excl_tax=("master_sharing_fee_excl_tax", "first"),
+            trx_count=("trx_count", "sum"),
+            total_merchant_amount=("total_merchant_amount", "sum"),
+            total_expected_sharing_fee_excl_tax=("total_expected_sharing_fee_excl_tax", "sum"),
+        )
+        .sort_values("payment_method_display", na_position="last")
+        .reset_index(drop=True)
+    )
     display = display.rename(
         columns={
             "payment_method_display": "Payment Method",
@@ -507,98 +557,146 @@ st.title("Rekonsiliasi Sharing Fee FINNET")
 st.caption("Pilih 1 tanggal dari Payment Date Time kolom C, proses hanya PG Provider FINNET, dan jika workbook punya beberapa sheet maka otomatis ambil sheet `Detail Settlement`.")
 
 with st.expander("Lihat master fee embedded", expanded=False):
-    st.dataframe(
-        build_master_df().drop(columns=["instrument_key"])[
-            ["instrumen_pembayaran", "sharing_fee_excl_tax", "sharing_fee", "admin_fee", "status_pg"]
-        ],
-        use_container_width=True,
-        hide_index=True,
+    master_preview = build_master_df().drop(columns=["instrument_key"])[
+        ["instrumen_pembayaran", "sharing_fee_excl_tax", "sharing_fee", "admin_fee", "status_pg"]
+    ].copy()
+    master_preview["sharing_fee_excl_tax"] = master_preview["sharing_fee_excl_tax"].map(
+        lambda value: format_number_id(value, decimals=4, strip_trailing_zero=True)
     )
+    master_preview["sharing_fee"] = master_preview["sharing_fee"].map(
+        lambda value: format_number_id(value, decimals=4, strip_trailing_zero=True)
+    )
+    master_preview["admin_fee"] = master_preview["admin_fee"].map(
+        lambda value: format_number_id(value, decimals=4, strip_trailing_zero=True)
+    )
+    st.dataframe(master_preview, use_container_width=True, hide_index=True)
 
-uploaded_file = st.file_uploader("Upload settlement FINNET", type=["xlsx", "xls", "csv"])
+control_col, content_col = st.columns([1, 3], gap="large")
+
+with control_col:
+    uploaded_file = st.file_uploader("Upload settlement FINNET", type=["xlsx", "xls", "csv"])
 
 if uploaded_file:
     try:
         source_df = read_uploaded_file(uploaded_file)
         column_map = resolve_required_columns(source_df)
     except Exception as exc:
-        st.error(str(exc))
+        with content_col:
+            st.error(str(exc))
         st.stop()
 
     finnet_df = filter_finnet_rows(source_df, column_map["pg_provider"])
     if finnet_df.empty:
-        st.error("Tidak ada data dengan PG Provider = FINNET.")
+        with content_col:
+            st.error("Tidak ada data dengan PG Provider = FINNET.")
         st.stop()
 
     finnet_df = prepare_finnet_dates(finnet_df, column_map["payment_datetime"])
     if finnet_df.empty:
-        st.error(
-            f"Kolom C (`{column_map['payment_datetime']}`) tidak bisa diparse dengan format m/dd/yyyy hh:mm:ss atau mm/dd/yyyy hh:mm:ss pada data FINNET."
-        )
+        with content_col:
+            st.error(
+                f"Kolom C (`{column_map['payment_datetime']}`) tidak bisa diparse dengan format m/dd/yyyy hh:mm:ss atau mm/dd/yyyy hh:mm:ss pada data FINNET."
+            )
         st.stop()
 
     available_dates = sorted(finnet_df["payment_date"].dropna().unique())
-    selected_date = st.date_input(
-        "Pilih tanggal Payment Date Time",
-        value=max(available_dates),
-        min_value=min(available_dates),
-        max_value=max(available_dates),
-    )
+    min_available_date = min(available_dates)
+    max_available_date = max(available_dates)
 
-    filtered_df = filter_by_selected_date(finnet_df, selected_date)
+    with control_col:
+        selected_range = st.date_input(
+            "Pilih interval tanggal Payment Date Time",
+            value=(min_available_date, max_available_date),
+            min_value=min_available_date,
+            max_value=max_available_date,
+        )
 
-    info1, info2, info3 = st.columns(3)
-    info1.metric("Total row upload", f"{len(source_df):,}")
-    info2.metric("Row PG Provider = FINNET", f"{len(finnet_df):,}")
-    info3.metric("Row tanggal terpilih", f"{len(filtered_df):,}")
+    if isinstance(selected_range, tuple) and len(selected_range) == 2:
+        start_date, end_date = selected_range
+    elif isinstance(selected_range, list) and len(selected_range) == 2:
+        start_date, end_date = selected_range[0], selected_range[1]
+    else:
+        start_date = selected_range
+        end_date = selected_range
+
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+
+    filtered_df = filter_by_date_range(finnet_df, start_date, end_date)
 
     selected_sheet_name = source_df.attrs.get("selected_sheet_name", "Unknown")
-    st.caption(
-        f"Excel dibaca dari sheet `{selected_sheet_name}`. Jika workbook punya beberapa sheet, app akan memilih `Detail Settlement`. "
-        f"Tanggal diparse dari kolom C (`{column_map['payment_datetime']}`) dengan format `m/dd/yyyy hh:mm:ss` atau `mm/dd/yyyy hh:mm:ss`. "
-        f"Amount diambil dari kolom U (`{column_map['merchant_amount']}`)."
-    )
 
-    with st.expander(f"Preview data upload - sheet {selected_sheet_name}", expanded=False):
-        st.dataframe(source_df.head(20), use_container_width=True, hide_index=True)
+    with control_col:
+        st.markdown("### Parameter")
+        st.caption(f"Sheet terpilih: `{selected_sheet_name}`")
+        st.caption(f"Periode: **{start_date.strftime('%d-%m-%Y')}** s.d. **{end_date.strftime('%d-%m-%Y')}**")
 
-    if filtered_df.empty:
-        st.warning("Tidak ada data FINNET pada tanggal yang dipilih.")
-        st.stop()
+    with content_col:
+        info1, info2, info3 = st.columns(3)
+        info1.metric("Total row upload", format_integer_id(len(source_df)))
+        info2.metric("Row PG Provider = FINNET", format_integer_id(len(finnet_df)))
+        info3.metric("Row periode terpilih", format_integer_id(len(filtered_df)))
 
-    detail_df, summary_df, unmatched_df = build_reconciliation(filtered_df, column_map)
-    display_df = build_display_table(summary_df)
+        st.caption(
+            f"Excel dibaca dari sheet `{selected_sheet_name}`. Jika workbook punya beberapa sheet, app akan memilih `Detail Settlement`. "
+            f"Tanggal diparse dari kolom C (`{column_map['payment_datetime']}`) dengan format `m/dd/yyyy hh:mm:ss` atau `mm/dd/yyyy hh:mm:ss`. "
+            f"Amount diambil dari kolom U (`{column_map['merchant_amount']}`)."
+        )
 
-    st.subheader(f"Tanggal Payment Date Time: {selected_date.strftime('%d-%m-%Y')}")
-    st.dataframe(
-        display_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Payment Method": st.column_config.TextColumn(width="medium"),
-            "Master Sharing Fee Exclude Tax": st.column_config.NumberColumn(format="%.2f"),
-            "Jumlah Transaksi": st.column_config.NumberColumn(format="%d"),
-            "Total Merchant Amount": st.column_config.NumberColumn(format="%.2f"),
-            "Total Sharing Fee Exclude Tax": st.column_config.NumberColumn(format="%.2f"),
-        },
-    )
+        with st.expander(f"Preview data upload - sheet {selected_sheet_name}", expanded=False):
+            st.dataframe(source_df.head(20), use_container_width=True, hide_index=True)
 
-    recap1, recap2, recap3 = st.columns(3)
-    recap1.metric("Payment Method tampil", f"{len(display_df):,}")
-    recap2.metric("Total Merchant Amount", f"{display_df['Total Merchant Amount'].fillna(0).sum():,.2f}")
-    recap3.metric("Total Sharing Fee Exclude Tax", f"{display_df['Total Sharing Fee Exclude Tax'].fillna(0).sum():,.2f}")
+        if filtered_df.empty:
+            st.warning("Tidak ada data FINNET pada interval tanggal yang dipilih.")
+            st.stop()
 
-    if not unmatched_df.empty:
-        with st.expander("Payment Method belum match ke master", expanded=False):
-            st.dataframe(unmatched_df, use_container_width=True, hide_index=True)
+        detail_df, summary_df, unmatched_df = build_reconciliation(filtered_df, column_map)
+        display_df = build_display_table(summary_df)
+        display_view_df = build_display_table_view(display_df)
 
-    excel_bytes = to_excel_bytes(display_df, detail_df, unmatched_df)
-    st.download_button(
-        label="Download hasil rekonsiliasi (.xlsx)",
-        data=excel_bytes,
-        file_name=f"rekonsiliasi_sharing_fee_finnet_{selected_date.strftime('%Y%m%d')}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+        st.subheader(
+            f"Periode Payment Date Time: {start_date.strftime('%d-%m-%Y')} s.d. {end_date.strftime('%d-%m-%Y')}"
+        )
+        st.dataframe(
+            display_view_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Payment Method": st.column_config.TextColumn(width="medium"),
+            },
+        )
+
+        recap1, recap2, recap3 = st.columns(3)
+        recap1.metric("Payment Method tampil", format_integer_id(len(display_df)))
+        recap2.metric(
+            "Total Merchant Amount",
+            format_number_id(display_df["Total Merchant Amount"].fillna(0).sum(), decimals=2),
+        )
+        recap3.metric(
+            "Total Sharing Fee Exclude Tax",
+            format_number_id(display_df["Total Sharing Fee Exclude Tax"].fillna(0).sum(), decimals=2),
+        )
+
+        if not unmatched_df.empty:
+            with st.expander("Payment Method belum match ke master", expanded=False):
+                st.dataframe(unmatched_df, use_container_width=True, hide_index=True)
+
+        excel_bytes = to_excel_bytes(display_df, detail_df, unmatched_df)
+        st.download_button(
+            label="Download hasil rekonsiliasi (.xlsx)",
+            data=excel_bytes,
+            file_name=(
+                "rekonsiliasi_sharing_fee_finnet_"
+                f"{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}.xlsx"
+            ),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+else:
+    with control_col:
+        st.markdown("### Parameter")
+        st.caption("Uploader dan interval tanggal ada di sisi kiri.")
+    with content_col:
+        st.info("Upload file settlement FINNET untuk mulai rekonsiliasi.")
 
 st.divider()
 st.markdown(
@@ -610,5 +708,6 @@ st.markdown(
     - Format `Payment Date Time` bisa **m/dd/yyyy hh:mm:ss** atau **mm/dd/yyyy hh:mm:ss**.
     - Amount diambil otomatis dari **kolom U**.
     - Tabel hanya menampilkan `Payment Method` yang ada pada data `PG Provider = FINNET`.
+    - Filter tanggal menggunakan **interval tanggal (range)**.
     """
 )

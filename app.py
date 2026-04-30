@@ -68,8 +68,6 @@ ALIAS_MAP = {
     "va mandiri": "VA Mandiri",
     "mandiri va": "VA Mandiri",
     "virtual account mandiri": "VA Mandiri",
-    "mega va": "VA BNI",
-    "bank mega va": "VA BNI",
     "dana": "DANA",
     "ovo": "OVO",
     "va bsi": "VA BSI",
